@@ -5,7 +5,7 @@ project(Ogre_glTF)
 #to build a library
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_INSTALL_PREFIX "./output")
+#set(CMAKE_INSTALL_PREFIX "./output")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG=1 -D_DEBUG=1") 
 
 if(NOT CMAKE_DEBUG_POSTFIX)
@@ -14,15 +14,16 @@ endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/CMake)
 
-include(CMake/OGRE.cmake)
-setupOgre( OGRE_SOURCE, OGRE_BINARIES, OGRE_LIBRARIES, FALSE )
+#include(CMake/OGRE.cmake)
+#setupOgre( OGRE_SOURCE, OGRE_BINARIES, OGRE_LIBRARIES, FALSE )
+find_package(OGRE REQUIRED)
 include(Ogre_glTF_ConfigTargets)
 
-if(WIN32)
-    set( LIBRARY_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/bin" )
-else()
-    set( LIBRARY_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}" )
-endif()
+#if(WIN32)
+#    set( LIBRARY_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/bin" )
+#else()
+#    set( LIBRARY_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}" )
+#endif()
 
 message("EXECUTABLE_OUTPUT_PATH :" ${EXECUTABLE_OUTPUT_PATH})
 option(Ogre_glTF_STATIC "Static build" FALSE)
@@ -51,9 +52,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 target_include_directories( Ogre_glTF PUBLIC
 	#Ogre and the physics based high level material system
-	${OGRE_INCLUDE_DIRS}
-	${OGRE_HlmsPbs_INCLUDE_DIRS}
-	${OGRE_HlmsPbsCommon_INCLUDE_DIRS}
+	#${OGRE_INCLUDE_DIRS}
+	#${OGRE_HlmsPbs_INCLUDE_DIRS}
+	#${OGRE_HlmsPbsCommon_INCLUDE_DIRS}
+    ${OGRE_INCLUDE_DIR}
+    ${OGRE_INCLUDE_DIR}/Hlms/Common
+    ${OGRE_INCLUDE_DIR}/Hlms/Pbs
 	#local include directory
 	./include
 	./src/private_headers
@@ -62,7 +66,8 @@ target_include_directories( Ogre_glTF PUBLIC
 
 target_link_libraries(Ogre_glTF
 	${OGRE_LIBRARIES}
-	${OGRE_HlmsPbs_LIBRARIES}
+	#${OGRE_HlmsPbs_LIBRARIES}
+	${OGRE_HlmsPbs_LIBRARY}
 )
 
 add_subdirectory(Samples)
