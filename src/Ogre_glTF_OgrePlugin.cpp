@@ -1,10 +1,11 @@
 #include "Ogre_glTF_OgrePlugin.hpp"
+#include <OgreAbiUtils.h>
 
 Ogre_glTF::glTFLoaderPlugin* gPluginInstaller = nullptr;
 
 extern "C" {
 
-void Ogre_glTF_EXPORT dllStartPlugin(void)
+void Ogre_glTF_EXPORT dllStartPlugin(const Ogre::NameValuePairList *options)
 {
 	if(gPluginInstaller)
 	{
@@ -24,7 +25,7 @@ void Ogre_glTF_EXPORT dllStartPlugin(void)
 	}
 
 	gPluginInstaller = new Ogre_glTF::glTFLoaderPlugin;
-	Ogre::Root::getSingleton().installPlugin(gPluginInstaller);
+	Ogre::Root::getSingleton().installPlugin(gPluginInstaller, options);
 }
 
 void Ogre_glTF_EXPORT dllStopPlugin(void)
@@ -41,10 +42,15 @@ Ogre_glTF::glTFLoaderPlugin::~glTFLoaderPlugin() = default;
 
 const Ogre::String& Ogre_glTF::glTFLoaderPlugin::getName() const { return name; }
 
-void Ogre_glTF::glTFLoaderPlugin::install() {}
+void Ogre_glTF::glTFLoaderPlugin::install( const Ogre::NameValuePairList *options ) {}
 
 void Ogre_glTF::glTFLoaderPlugin::initialise() { gltf = std::make_unique<Ogre_glTF::glTFLoader>(); }
 
 void Ogre_glTF::glTFLoaderPlugin::shutdown() { gltf = nullptr; }
 
 void Ogre_glTF::glTFLoaderPlugin::uninstall() {}
+
+void Ogre_glTF::glTFLoaderPlugin::getAbiCookie( Ogre::AbiCookie &outAbiCookie )
+{
+    outAbiCookie = Ogre::generateAbiCookie();
+}
