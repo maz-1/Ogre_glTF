@@ -16,7 +16,7 @@
 
 #include <OgreItem.h>
 #include <OgreMesh2.h>
-#include <Animation/OgreTagPoint.h>
+#include <Animation/OgreTagPoint2.h>
 #include <Animation/OgreSkeletonInstance.h>
 
 using namespace Ogre_glTF;
