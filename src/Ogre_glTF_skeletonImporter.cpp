@@ -10,8 +10,6 @@
 
 using namespace Ogre_glTF;
 
-int skeletonImporter::skeletonID = 0;
-
 void skeletonImporter::addChidren(const std::vector<int>& childs, Ogre::v1::OldBone* parent)
 {
 
@@ -77,7 +75,22 @@ void skeletonImporter::loadBoneHierarchy(int boneIndex)
 	addChidren(node.children, rootBone);
 }
 
-skeletonImporter::skeletonImporter(tinygltf::Model& input) : model { input } {}
+skeletonImporter::skeletonImporter(tinygltf::Model& input, size_t importId) : model { input }, importId { importId } {}
+
+void skeletonImporter::releaseCreatedSkeletonsSince(size_t keepCount)
+{
+	skeleton = Ogre::v1::SkeletonPtr();
+	auto* skeletonManager = Ogre::v1::OldSkeletonManager::getSingletonPtr();
+	while(createdSkeletons.size() > keepCount)
+	{
+		const auto& created = createdSkeletons.back();
+		if(created && skeletonManager && skeletonManager->resourceExists(created->getName()))
+			skeletonManager->remove(created->getName());
+		createdSkeletons.pop_back();
+	}
+	bindMatrices.clear();
+	nodeToJointMap.clear();
+}
 
 void skeletonImporter::loadTimepointFromSamplerToKeyFrame(int bone, int frameID, int& count, keyFrame& animationFrame, tinygltf::AnimationSampler& sampler)
 {
@@ -356,11 +369,11 @@ std::vector<int> traversal(const tinygltf::Model& m, int node)
 
 Ogre::v1::SkeletonPtr skeletonImporter::getSkeleton(size_t index)
 {
-	assert(index < model.skins.size());
+	if(index >= model.skins.size()) throw LoadingError("glTF skin index out of range: " + std::to_string(index));
 	const auto& skin = model.skins[index];
 
-	const std::string skeletonName = (!skin.name.empty() ? skin.name : "unnamedSkeleton" + std::to_string(skeletonID++));
-	OgreLog("First skin name is " + skeletonName);
+	const std::string skeletonName = "glTF_skeleton_" + std::to_string(importId) + "_" + std::to_string(index);
+	OgreLog("Loading skin " + skin.name + " as " + skeletonName);
 
 	//Get skeleton
 	skeleton = Ogre::v1::OldSkeletonManager::getSingleton().getByName(skeletonName);
@@ -371,9 +384,16 @@ Ogre::v1::SkeletonPtr skeletonImporter::getSkeleton(size_t index)
 	}
 
 	//Create new skeleton
+	createdSkeletons.reserve(createdSkeletons.size() + 1u);
+	const size_t createdCount = createdSkeletons.size();
+	try
+	{
 	skeleton = Ogre::v1::OldSkeletonManager::getSingleton().create(skeletonName, Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME, true);
 
 	if(!skeleton) throw InitError("Couldn't create skeletion for skin" + skeletonName);
+	createdSkeletons.push_back(skeleton);
+	bindMatrices.clear();
+	nodeToJointMap.clear();
 
 	//OgreLog("skin.skeleton = " + std::to_string(skin.skeleton));
 	//OgreLog("first joint : " + std::to_string(skin.joints.front()));
@@ -465,4 +485,10 @@ Ogre::v1::SkeletonPtr skeletonImporter::getSkeleton(size_t index)
 	loadSkeletonAnimations(skin, skeletonName);
 
 	return skeleton;
+	}
+	catch(...)
+	{
+		releaseCreatedSkeletonsSince(createdCount);
+		throw;
+	}
 }

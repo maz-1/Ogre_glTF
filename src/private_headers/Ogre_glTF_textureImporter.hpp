@@ -11,6 +11,7 @@
 #include "OgreBitwise.h"
 #include <OgreHlms.h>
 #include <OgreHlmsPbs.h>
+#include "Ogre_glTF_texturePool.hpp"
 
 
 namespace Ogre_glTF
@@ -32,6 +33,9 @@ namespace Ogre_glTF
 		Ogre::TextureGpuManager* mTextureManager;
 
 		std::vector<std::uint8_t> mPixelBuffer;
+		std::shared_ptr<texturePool> mTexturePool;
+		std::vector<std::shared_ptr<texturePool::Entry>> mTextureLeases;
+		std::vector<Ogre::TextureGpu*> mCreatedTextures;
 
 
 	public:
@@ -41,6 +45,11 @@ namespace Ogre_glTF
 
 		///Identifier shared by this model's Ogre textures and material datablocks
 		size_t getImportId() const { return mId; }
+		void enableTextureSharing();
+		void releaseTextures();
+		void releaseTexturesSince(size_t keepLeases, size_t keepCreated);
+		size_t getLeaseCount() const { return mTextureLeases.size(); }
+		size_t getCreatedTextureCount() const { return mCreatedTextures.size(); }
 
 		Ogre::TextureGpu* getTexture(
 			int glTFTextureIndex, 

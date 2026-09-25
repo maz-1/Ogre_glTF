@@ -1,4 +1,6 @@
 #include <utility>
+#include <cstdio>
+#include <exception>
 
 #include "Ogre_glTF.hpp"
 #include "Ogre_glTF_modelConverter.hpp"
@@ -16,6 +18,9 @@
 
 #include <OgreItem.h>
 #include <OgreMesh2.h>
+#include <OgreMeshManager2.h>
+#include <OgreOldSkeletonManager.h>
+#include <OgreHlmsManager.h>
 #include <Animation/OgreTagPoint2.h>
 #include <Animation/OgreSkeletonInstance.h>
 
@@ -26,10 +31,22 @@ struct loaderAdapter::impl
 {
 	///Constructor, initialize once all the objects inclosed in this class. They need a reference
 	///to a model object (and sometimes more) given at construct time
-	impl() : textureImp(model), materialLoad(model, textureImp), modelConv(model), skeletonImp(model) {}
+	impl() : textureImp(model), materialLoad(model, textureImp),
+		modelConv(model, textureImp.getImportId()), skeletonImp(model, textureImp.getImportId()) {}
 
 	///Variable to check if everything is alright with the adapter
 	bool valid = false;
+	bool resourcesReleased = false;
+	SceneInstance* activeScene = nullptr;
+	bool ownsGlbResource = false;
+	Ogre::String glbResourceName;
+	struct ResourceCheckpoint {
+		size_t materials = 0;
+		size_t textureLeases = 0;
+		size_t createdTextures = 0;
+		size_t meshes = 0;
+		size_t skeletons = 0;
+	};
 
 	///The model object that data will be loaded into and read from
 	tinygltf::Model model;
@@ -52,6 +69,19 @@ struct loaderAdapter::impl
 
 	///Skeleton importer : load skins from the glTF model, create equivalent OgreSkeleton objects
 	skeletonImporter skeletonImp;
+
+	ResourceCheckpoint checkpoint() const {
+		return { materialLoad.getCreatedDatablocks().size(), textureImp.getLeaseCount(),
+			textureImp.getCreatedTextureCount(), modelConv.getCreatedMeshes().size(),
+			skeletonImp.getCreatedSkeletons().size() };
+	}
+
+	void rollbackSince(const ResourceCheckpoint& saved) {
+		materialLoad.releaseCreatedDatablocksSince(saved.materials);
+		textureImp.releaseTexturesSince(saved.textureLeases, saved.createdTextures);
+		modelConv.releaseCreatedMeshesSince(saved.meshes);
+		skeletonImp.releaseCreatedSkeletonsSince(saved.skeletons);
+	}
 };
 
 loaderAdapter::loaderAdapter() : pimpl { std::make_unique<impl>() } { OgreLog("Created adapter object..."); }
@@ -65,11 +95,14 @@ void loaderAdapter::loadMainScene(Ogre::SceneNode* parentNode, Ogre::SceneManage
 
 	//pimpl->textureImp.loadTextures();
 	auto sceneIdx = pimpl->model.defaultScene >= 0 ? pimpl->model.defaultScene : 0;
+	if(static_cast<size_t>(sceneIdx) >= pimpl->model.scenes.size())
+		throw LoadingError("glTF has no valid scene to instantiate");
 	const auto& scene = pimpl->model.scenes[sceneIdx];
 
 	for(auto nodeIdx : scene.nodes)
 	{
-		getSceneNode(nodeIdx, parentNode, smgr);
+		auto* rootNode = getSceneNode(nodeIdx, parentNode, smgr);
+		if(pimpl->activeScene && rootNode) pimpl->activeScene->roots.push_back(rootNode);
 	}
 }
 
@@ -77,6 +110,8 @@ Ogre::SceneNode* loaderAdapter::getFirstSceneNode(Ogre::SceneManager* smgr) cons
 {
 	if(!isOk())
 		return nullptr;
+	if(pimpl->model.scenes.empty() || pimpl->model.scenes[0].nodes.empty())
+		throw LoadingError("glTF has no first scene node");
 	
 	//pimpl->textureImp.loadTextures();
 	return getSceneNode(pimpl->model.scenes[0].nodes[0], smgr->getRootSceneNode(), smgr);
@@ -84,7 +119,8 @@ Ogre::SceneNode* loaderAdapter::getFirstSceneNode(Ogre::SceneManager* smgr) cons
 
 Ogre::SceneNode* loaderAdapter::getSceneNode(size_t index, Ogre::SceneNode* parentSceneNode, Ogre::SceneManager* smgr) const
 {
-	assert(index < pimpl->model.nodes.size());
+	if(pimpl->resourcesReleased) throw InitError("glTF adapter resources have been released");
+	if(index >= pimpl->model.nodes.size()) throw LoadingError("glTF scene node index is out of range");
 
 	const auto& node = pimpl->model.nodes[index];
 	// Check if node is not a bone
@@ -97,6 +133,7 @@ Ogre::SceneNode* loaderAdapter::getSceneNode(size_t index, Ogre::SceneNode* pare
 	}
 
 	auto sceneNode = parentSceneNode->createChildSceneNode();
+	if(pimpl->activeScene) pimpl->activeScene->nodes.push_back(sceneNode);
 	sceneNode->setName(node.name);
 	
 	if(!node.translation.empty())
@@ -146,6 +183,7 @@ Ogre::SceneNode* loaderAdapter::getSceneNode(size_t index, Ogre::SceneNode* pare
 		}
 
 		auto item		 = smgr->createItem(ogreMesh, Ogre::SCENE_DYNAMIC);
+		if(pimpl->activeScene) pimpl->activeScene->items.push_back(item);
 		const auto& mesh = pimpl->model.meshes[node.mesh];
 		for(size_t i = 0; i < mesh.primitives.size(); ++i) 
 		{ 
@@ -195,6 +233,9 @@ Ogre::SceneNode* loaderAdapter::getSceneNode(size_t index, Ogre::SceneNode* pare
 
 void loaderAdapter::createTagPoints(int boneIndex, Ogre::SkeletonInstance* skeletonInstance, Ogre::SceneManager* smgr) const
 {
+	if(pimpl->resourcesReleased) throw InitError("glTF adapter resources have been released");
+	if(boneIndex < 0 || static_cast<size_t>(boneIndex) >= pimpl->model.nodes.size())
+		throw LoadingError("glTF bone node index is out of range");
 	const auto& boneNode = pimpl->model.nodes[boneIndex];
 
 	for(auto child : boneNode.children)
@@ -204,6 +245,7 @@ void loaderAdapter::createTagPoints(int boneIndex, Ogre::SkeletonInstance* skele
 		if(childNode.mesh >= 0)
 		{
 			auto tagPoint = smgr->createTagPoint();
+			if(pimpl->activeScene) pimpl->activeScene->nodes.push_back(tagPoint);
 			tagPoint->setName(childNode.name);
 
 			Ogre::Vector3 position;
@@ -253,6 +295,7 @@ void loaderAdapter::createTagPoints(int boneIndex, Ogre::SkeletonInstance* skele
 			}
 
 			auto item		 = smgr->createItem(ogreMesh, Ogre::SCENE_DYNAMIC);
+			if(pimpl->activeScene) pimpl->activeScene->items.push_back(item);
 			const auto& mesh = pimpl->model.meshes[childNode.mesh];
 			for(size_t i = 0; i < mesh.primitives.size(); ++i) 
 			{ 
@@ -276,11 +319,16 @@ void loaderAdapter::createTagPoints(int boneIndex, Ogre::SkeletonInstance* skele
 	}
 }
 
-Ogre::HlmsDatablock* loaderAdapter::getDatablock(size_t index) const { return pimpl->materialLoad.getDatablock(index); }
+Ogre::HlmsDatablock* loaderAdapter::getDatablock(size_t index) const
+{
+	if(pimpl->resourcesReleased) throw InitError("glTF adapter resources have been released");
+	return pimpl->materialLoad.getDatablock(index);
+}
 
 size_t loaderAdapter::getDatablockCount() { return pimpl->materialLoad.getDatablockCount(); }
 
-loaderAdapter::loaderAdapter(loaderAdapter&& other) noexcept : pimpl { std::move(other.pimpl) }
+loaderAdapter::loaderAdapter(loaderAdapter&& other) noexcept : pimpl { std::move(other.pimpl) },
+	adapterName { std::move(other.adapterName) }
 {
 
 	OgreLog("Moved adapter object...");
@@ -289,12 +337,113 @@ loaderAdapter::loaderAdapter(loaderAdapter&& other) noexcept : pimpl { std::move
 loaderAdapter& loaderAdapter::operator=(loaderAdapter&& other) noexcept
 {
 	pimpl = std::move(other.pimpl);
+	adapterName = std::move(other.adapterName);
 	return *this;
 }
 
-bool loaderAdapter::isOk() const { return pimpl->valid; }
+bool loaderAdapter::isOk() const { return pimpl && pimpl->valid; }
 
-std::string loaderAdapter::getLastError() const { return pimpl->error; }
+std::string loaderAdapter::getLastError() const { return pimpl ? pimpl->error : std::string(); }
+
+void loaderAdapter::releaseResources()
+{
+	if(!pimpl || pimpl->resourcesReleased) return;
+	if(pimpl->activeScene) throw InitError("Cannot release a glTF asset during scene creation");
+	if(!Ogre::Root::getSingletonPtr() || !Ogre::Root::getSingleton().isInitialised() ||
+	   !Ogre::Root::getSingleton().getHlmsManager() ||
+	   !Ogre::Root::getSingleton().getRenderSystem())
+		throw InitError("Release glTF resources before Ogre::Root shuts down");
+
+	pimpl->rollbackSince({});
+	pimpl->textureImp.releaseTextures();
+	if(pimpl->ownsGlbResource && GlbFileManager::getSingletonPtr()) {
+		auto& glbManager = GlbFileManager::getSingleton();
+		if(glbManager.resourceExists(pimpl->glbResourceName))
+			glbManager.remove(pimpl->glbResourceName);
+	}
+	pimpl->resourcesReleased = true;
+	pimpl->valid = false;
+}
+
+SceneInstance::~SceneInstance()
+{
+	try { reset(); }
+	catch(const std::exception& error) {
+		std::fprintf(stderr, "Ogre_glTF scene release failed: %s\n", error.what());
+	}
+	catch(...) { std::fputs("Ogre_glTF scene release failed\n", stderr); }
+}
+
+SceneInstance::SceneInstance(SceneInstance&& other) noexcept :
+	adapter(std::move(other.adapter)), sceneManager(other.sceneManager),
+	roots(std::move(other.roots)), nodes(std::move(other.nodes)), items(std::move(other.items))
+{
+	other.sceneManager = nullptr;
+	other.roots.clear();
+	other.nodes.clear();
+	other.items.clear();
+}
+
+SceneInstance& SceneInstance::operator=(SceneInstance&& other)
+{
+	if(this != &other) {
+		reset();
+		adapter = std::move(other.adapter);
+		sceneManager = other.sceneManager;
+		roots = std::move(other.roots);
+		nodes = std::move(other.nodes);
+		items = std::move(other.items);
+		other.sceneManager = nullptr;
+		other.roots.clear();
+		other.nodes.clear();
+		other.items.clear();
+	}
+	return *this;
+}
+
+void SceneInstance::reset()
+{
+	if(sceneManager) {
+		// Destroying Items releases their SkeletonInstances and detaches bone TagPoints.
+		// The TagPoint scene nodes can then be destroyed with the other nodes.
+		while(!items.empty()) {
+			sceneManager->destroyItem(items.back());
+			items.pop_back();
+		}
+		while(!nodes.empty()) {
+			sceneManager->destroySceneNode(nodes.back());
+			nodes.pop_back();
+		}
+	}
+	items.clear();
+	nodes.clear();
+	roots.clear();
+	sceneManager = nullptr;
+	adapter.reset();
+}
+
+SceneInstance ManagedAsset::instantiate(Ogre::SceneNode* parentNode, Ogre::SceneManager* smgr) const
+{
+	if(!adapter || !adapter->isOk()) throw LoadingError("Cannot instantiate an invalid managed glTF asset");
+	if(!parentNode || !smgr) throw LoadingError("Managed glTF scene needs a parent node and scene manager");
+	if(adapter->pimpl->activeScene) throw InitError("Concurrent scene creation from one glTF asset is unsupported");
+
+	SceneInstance scene;
+	scene.adapter = adapter;
+	scene.sceneManager = smgr;
+	const auto checkpoint = adapter->pimpl->checkpoint();
+	adapter->pimpl->activeScene = &scene;
+	try {
+		adapter->loadMainScene(parentNode, smgr);
+	} catch(...) {
+		adapter->pimpl->activeScene = nullptr;
+		scene.reset();
+		adapter->pimpl->rollbackSince(checkpoint);
+		throw;
+	}
+	adapter->pimpl->activeScene = nullptr;
+	return scene;
+}
 
 ///Implementation of the glTF loader. Exist as a pImpl inside the glTFLoader class
 struct glTFLoader::glTFLoaderImpl
@@ -373,16 +522,35 @@ loaderAdapter glTFLoader::loadFromFileSystem(const std::string& path) const
 	OgreLog("loading file " + path);
 	loaderAdapter adapter;
 	adapter.adapterName = path;
-	loaderImpl->loadInto(adapter, path);
-
-	//if (adapter.getLastError().empty())
-	{
-		OgreLog("Debug : it looks like the file was loaded without error!");
-		adapter.pimpl->valid = true;
-	}
-
-	adapter.pimpl->modelConv.debugDump();
+	adapter.pimpl->valid = loaderImpl->loadInto(adapter, path);
+	if(adapter.pimpl->valid) adapter.pimpl->modelConv.debugDump();
 	return adapter;
+}
+
+namespace
+{
+	std::shared_ptr<loaderAdapter> manageAdapter(loaderAdapter&& adapter)
+	{
+		return std::shared_ptr<loaderAdapter>(new loaderAdapter(std::move(adapter)),
+			[](loaderAdapter* value) noexcept {
+				try {
+					value->releaseResources();
+				} catch(const std::exception& error) {
+					std::fprintf(stderr, "Ogre_glTF resource release failed: %s\n", error.what());
+				} catch(...) {
+					std::fputs("Ogre_glTF resource release failed\n", stderr);
+				}
+				delete value;
+			});
+	}
+}
+
+ManagedAsset glTFLoader::loadManagedFromFileSystem(const std::string& path) const
+{
+	auto adapter = loadFromFileSystem(path);
+	if(!adapter.isOk()) throw LoadingError("Could not load glTF file: " + adapter.getLastError());
+	adapter.pimpl->textureImp.enableTextureSharing();
+	return ManagedAsset(manageAdapter(std::move(adapter)));
 }
 
 loaderAdapter glTFLoader::loadGlbResource(const std::string& name) const
@@ -394,12 +562,29 @@ loaderAdapter glTFLoader::loadGlbResource(const std::string& name) const
 	loaderAdapter adapter;
 	if(glbFile)
 	{
-		loaderImpl->loadGlb(adapter, glbFile);
-		adapter.pimpl->valid = true;
+		adapter.pimpl->valid = loaderImpl->loadGlb(adapter, glbFile);
 	}
 
-	adapter.pimpl->modelConv.debugDump();
+	if(adapter.pimpl->valid) adapter.pimpl->modelConv.debugDump();
 	return adapter;
+}
+
+ManagedAsset glTFLoader::loadManagedGlbResource(const std::string& name) const
+{
+	auto& glbManager = GlbFileManager::getSingleton();
+	const bool existed = glbManager.resourceExists(name);
+	try {
+		auto adapter = loadGlbResource(name);
+		if(!adapter.isOk())
+			throw LoadingError("Could not load GLB resource: " + adapter.getLastError());
+		adapter.pimpl->ownsGlbResource = !existed;
+		adapter.pimpl->glbResourceName = name;
+		adapter.pimpl->textureImp.enableTextureSharing();
+		return ManagedAsset(manageAdapter(std::move(adapter)));
+	} catch(...) {
+		if(!existed && glbManager.resourceExists(name)) glbManager.remove(name);
+		throw;
+	}
 }
 
 glTFLoader::glTFLoader(glTFLoader&& other) noexcept : loaderImpl(std::move(other.loaderImpl)) {}

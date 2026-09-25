@@ -159,11 +159,16 @@ namespace Ogre_glTF
 	public:
 		///Construct a modelConverter from a model
 		/// \param input model we are converting into an Ogre model
-		modelConverter(tinygltf::Model& input);
+		/// \param importId unique identifier for this imported asset
+		modelConverter(tinygltf::Model& input, size_t importId);
 
 		///Returns the mesh with the given name in the glTF file.
 		Ogre::MeshPtr getOgreMesh(const Ogre::String& name);
 		Ogre::MeshPtr getOgreMesh(size_t meshIdx);
+		///Resources created by this importer.
+		const std::vector<Ogre::MeshPtr>& getCreatedMeshes() const { return createdMeshes; }
+		///Remove resources created after a prior count (used to roll back a failed scene instance).
+		void releaseCreatedMeshesSince(size_t keepCount);
 		
 		///Print out debug information on the model structure
 		// nodes contain transformation and scale information
@@ -198,5 +203,8 @@ namespace Ogre_glTF
 
 		///Reference to a loaded model
 		tinygltf::Model& model;
+		///The import owns a private namespace in Ogre's global mesh manager.
+		const size_t importId;
+		std::vector<Ogre::MeshPtr> createdMeshes;
 	};
 }

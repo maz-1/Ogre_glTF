@@ -15,6 +15,23 @@ materialLoader::materialLoader(tinygltf::Model& input, textureImporter& textureI
 	model { input } 
 {}
 
+void materialLoader::releaseCreatedDatablocksSince(size_t keepCount)
+{
+	auto* pbs = Ogre::Root::getSingleton().getHlmsManager()->getHlms(Ogre::HLMS_PBS);
+	if(!pbs && createdDatablocks.size() > keepCount)
+		throw InitError("Cannot release glTF materials after Ogre PBS has shut down");
+	while(createdDatablocks.size() > keepCount) {
+		const auto name = createdDatablocks.back();
+		const Ogre::IdString id(name);
+		if(pbs->getDatablock(id)) pbs->destroyDatablock(id);
+		for(auto it = assignedDatablockNames.begin(); it != assignedDatablockNames.end();) {
+			if(it->second == name) it = assignedDatablockNames.erase(it);
+			else ++it;
+		}
+		createdDatablocks.pop_back();
+	}
+}
+
 Ogre::Vector3 materialLoader::convertColor(const tinygltf::ColorValue& color)
 {
 	std::array<Ogre::Real, 4> colorBuffer{};
@@ -132,25 +149,31 @@ Ogre::HlmsDatablock* materialLoader::getDatablock(size_t index) const
 		throw LoadingError("glTF material index is out of range");
 	auto HlmsPbs			 = static_cast<Ogre::HlmsPbs*>(Ogre::Root::getSingleton().getHlmsManager()->getHlms(Ogre::HlmsTypes::HLMS_PBS));
 	const auto material		 = model.materials[index];
-	const auto name = "glTF_material_" + std::to_string(textureImporterRef.getImportId()) + "_" +
+	const auto baseName = "glTF_material_" + std::to_string(textureImporterRef.getImportId()) + "_" +
 		std::to_string(index) + "_" + material.name;
-	const Ogre::IdString nameId(name);
-
-	auto datablock = static_cast<Ogre::HlmsPbsDatablock*>(HlmsPbs->getDatablock(nameId));
-	
-	if(datablock){
-		OgreLog("Found HlmsPbsDatablock " + name + " in Ogre::HlmsPbs");
-		return datablock;
+	auto assigned = assignedDatablockNames.find(index);
+	if(assigned != assignedDatablockNames.end()) {
+		auto* existing = HlmsPbs->getDatablock(Ogre::IdString(assigned->second));
+		if(existing && existing->getNameStr() && *existing->getNameStr() == assigned->second)
+			return existing;
+		assignedDatablockNames.erase(assigned);
 	}
 
-	datablock = static_cast<Ogre::HlmsPbsDatablock*>(HlmsPbs->createDatablock(
+	Ogre::String name = baseName;
+	for(size_t nonce = 0; HlmsPbs->getDatablock(Ogre::IdString(name)); ++nonce)
+		name = baseName + "_collision_" + std::to_string(nonce);
+	const Ogre::IdString nameId(name);
+	assignedDatablockNames.emplace(index, name);
+
+	Ogre::HlmsPbsDatablock* datablock = nullptr;
+	try {
+		datablock = static_cast<Ogre::HlmsPbsDatablock*>(HlmsPbs->createDatablock(
 		nameId,
 		name,
 		Ogre::HlmsMacroblock {},
 		Ogre::HlmsBlendblock {},
 		Ogre::HlmsParamVec {}));
-
-	try {
+		createdDatablocks.push_back(name);
 		datablock->setWorkflow(Ogre::HlmsPbsDatablock::Workflows::MetallicWorkflow);
 
 		for(const auto& content : material.values)
@@ -159,7 +182,10 @@ Ogre::HlmsDatablock* materialLoader::getDatablock(size_t index) const
 		for(const auto& content : material.additionalValues)
 			handleMaterialValue(datablock, content.first, &content.second);
 	} catch(...) {
-		HlmsPbs->destroyDatablock(nameId);
+		if(!createdDatablocks.empty() && createdDatablocks.back() == name)
+			createdDatablocks.pop_back();
+		if(HlmsPbs->getDatablock(nameId)) HlmsPbs->destroyDatablock(nameId);
+		assignedDatablockNames.erase(index);
 		throw;
 	}
 

@@ -10,7 +10,18 @@ using namespace Ogre_glTF;
 
 size_t vertexBufferPart::getPartStride() const { return buffer->elementSize() * perVertex; }
 
-modelConverter::modelConverter(tinygltf::Model& input) : model { input } {}
+modelConverter::modelConverter(tinygltf::Model& input, size_t importId) : model { input }, importId { importId } {}
+
+void modelConverter::releaseCreatedMeshesSince(size_t keepCount)
+{
+	auto* meshManager = Ogre::MeshManager::getSingletonPtr();
+	while(createdMeshes.size() > keepCount)
+	{
+		const auto& mesh = createdMeshes.back();
+		if(mesh && meshManager && meshManager->resourceExists(mesh->getName())) meshManager->remove(mesh->getName());
+		createdMeshes.pop_back();
+	}
+}
 
 Ogre::VertexBufferPackedVec modelConverter::constructVertexBuffer(const std::vector<vertexBufferPart>& parts) const
 {
@@ -83,20 +94,28 @@ Ogre::MeshPtr modelConverter::getOgreMesh(const Ogre::String& name)
 
 Ogre::MeshPtr modelConverter::getOgreMesh(size_t meshIdx)
 {
+	if(meshIdx >= model.meshes.size()) throw LoadingError("glTF mesh index out of range: " + std::to_string(meshIdx));
+
 	Ogre::Aabb boundingBox;
 	auto& mesh = model.meshes[meshIdx];
 	OgreLog("Found mesh " + mesh.name + " in glTF file");
+	const Ogre::String resourceName = "glTF_mesh_" + std::to_string(importId) + "_" + std::to_string(meshIdx);
 
-	auto ogreMesh = Ogre::MeshManager::getSingleton().getByName(mesh.name);
+	auto ogreMesh = Ogre::MeshManager::getSingleton().getByName(resourceName);
 	if(ogreMesh)
 	{
-		OgreLog("Found mesh " + mesh.name + " in Ogre::MeshManager(v2)");
+		OgreLog("Found mesh " + resourceName + " in Ogre::MeshManager(v2)");
 		return ogreMesh;
 	}
 
 	OgreLog("Loading mesh from glTF file");
 	OgreLog("mesh has " + std::to_string(mesh.primitives.size()) + " primitives");
-	ogreMesh = Ogre::MeshManager::getSingleton().createManual(mesh.name, Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME);
+	createdMeshes.reserve(createdMeshes.size() + 1u);
+	const size_t createdCount = createdMeshes.size();
+	try
+	{
+	ogreMesh = Ogre::MeshManager::getSingleton().createManual(resourceName, Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME);
+	createdMeshes.push_back(ogreMesh);
 	OgreLog("Created mesh on v2 MeshManager");
 
 	for(const auto& primitive : mesh.primitives)
@@ -194,6 +213,12 @@ Ogre::MeshPtr modelConverter::getOgreMesh(size_t meshIdx)
 	//OgreLog("Setting 'bounding sphere radius' from bounds : " + std::to_string(boundingBox.getRadius()));
 
 	return ogreMesh;
+	}
+	catch(...)
+	{
+		releaseCreatedMeshesSince(createdCount);
+		throw;
+	}
 }
 
 void modelConverter::debugDump() const

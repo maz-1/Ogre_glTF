@@ -51,6 +51,23 @@ Ogre::Item* cesiumMan = glTFLoader->getModelData("CesiumMan.glb", glTFLoaderInte
 
 In case you cloned without `--recursive`, `cd` into the `Ogre_glTF` directory and use `git submodule update --init --recursive` to download dependencies correctly.
 
+### Managed scenes and resource lifetime
+
+The managed API owns the Ogre objects created for a glTF scene. Keep its handles on the Ogre rendering thread and release them before destroying the `SceneManager` or shutting down `Ogre::Root`:
+
+```cpp
+Ogre_glTF::glTFLoader loader;
+auto asset = loader.loadManagedFromFileSystem(path);
+auto scene = asset.instantiate(parentNode, sceneManager);
+// The scene can continue rendering after `asset` is destroyed.
+scene.reset(); // Destroys this instance's Items and nodes.
+// The last asset or scene handle releases its materials, textures, meshes and skeletons.
+```
+
+`loadManagedGlbResource(name)` provides the same lifetime model for GLB resources. Multiple instances of one asset share its materials, meshes and skeletons. Separate load calls create separate materials, meshes and skeletons, while identical uploaded textures are shared across assets. Texture sharing compares decoded pixels and all upload settings, so changing image names or paths does not affect reuse. An instance that fails to build rolls back only the resources created by that attempt; existing instances stay usable. A managed GLB asset removes its source resource on release only if it created that resource.
+
+The older `loaderAdapter` methods return Ogre pointers whose lifetime the caller controls. They retain their previous behavior. If using `loaderAdapter::releaseResources()` directly, first destroy every scene object made by that adapter and stop using its returned datablocks. Do not use the adapter again after releasing its resources.
+
 
 ## Building the source code
 

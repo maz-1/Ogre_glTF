@@ -40,6 +40,8 @@ endif ()
 #Get Ogre from your system. May need to set some variables for Windows folks
 #find_package(OGRE COMPONENTS HlmsPbs REQUIRED)
 file(GLOB librarySources ./src/*.cpp ./src/private_headers/*.hpp ./include/*.hpp)
+list(APPEND librarySources ${CMAKE_CURRENT_SOURCE_DIR}/src/Ogre_glTF_texturePool.cpp)
+list(REMOVE_DUPLICATES librarySources)
 
 add_library(${PROJECT_NAME} ${Ogre_glTF_LIB_TYPE} ${librarySources})
 

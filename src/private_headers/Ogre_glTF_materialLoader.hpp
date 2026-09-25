@@ -2,6 +2,8 @@
 #include "tiny_gltf.h"
 #include <OgreHlms.h>
 #include <OgreHlmsPbs.h>
+#include <vector>
+#include <unordered_map>
 
 namespace Ogre_glTF
 {
@@ -16,6 +18,8 @@ namespace Ogre_glTF
 		textureImporter& textureImporterRef;
 		///The model
 		tinygltf::Model& model;
+		mutable std::vector<Ogre::String> createdDatablocks;
+		mutable std::unordered_map<size_t, Ogre::String> assignedDatablockNames;
 
 		static Ogre::Vector3 convertColor(const tinygltf::ColorValue& color);
 
@@ -84,6 +88,8 @@ namespace Ogre_glTF
 		materialLoader(tinygltf::Model& input, textureImporter& textureInterface);
 		///Get the material (the HlmsDatablock)
 		Ogre::HlmsDatablock* getDatablock(size_t index = 0) const;
+		const std::vector<Ogre::String>& getCreatedDatablocks() const { return createdDatablocks; }
+		void releaseCreatedDatablocksSince(size_t keepCount);
 		size_t getDatablockCount() const;
 	};
 }

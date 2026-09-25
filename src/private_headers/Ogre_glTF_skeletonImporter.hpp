@@ -15,8 +15,9 @@ namespace Ogre_glTF
 
 		using tinygltfJointNodeIndex = int;
 
-		///number to increment when creating strings for skeleton with no names in glTF files
-		static int skeletonID;
+		///The import owns a private namespace in Ogre's global skeleton manager.
+		const size_t importId;
+		std::vector<Ogre::v1::SkeletonPtr> createdSkeletons;
 
 		///Pointer to the skeleton object we are currently working on.
 		Ogre::v1::SkeletonPtr skeleton;
@@ -83,9 +84,14 @@ namespace Ogre_glTF
 	public:
 		///Construct the skeleton importer
 		/// \param input model where the skeleton data is loaded from
-		skeletonImporter(tinygltf::Model& input);
+		/// \param importId unique identifier for this imported asset
+		skeletonImporter(tinygltf::Model& input, size_t importId);
 
 		///Return the constructed skeleton pointer
 		Ogre::v1::SkeletonPtr getSkeleton(size_t index);
+		///Resources created by this importer.
+		const std::vector<Ogre::v1::SkeletonPtr>& getCreatedSkeletons() const { return createdSkeletons; }
+		///Remove resources created after a prior count (used to roll back a failed scene instance).
+		void releaseCreatedSkeletonsSince(size_t keepCount);
 	};
 }

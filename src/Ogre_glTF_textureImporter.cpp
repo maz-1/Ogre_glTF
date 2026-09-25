@@ -21,6 +21,26 @@ textureImporter::textureImporter(tinygltf::Model& input) : mId { mNextId.fetch_a
 	mTextureManager = renderSystem->getTextureGpuManager();
 }
 
+void textureImporter::enableTextureSharing()
+{
+	mTexturePool = texturePool::forManager(mTextureManager);
+}
+
+void textureImporter::releaseTextures()
+{
+	releaseTexturesSince(0, 0);
+	mTexturePool.reset();
+}
+
+void textureImporter::releaseTexturesSince(size_t keepLeases, size_t keepCreated)
+{
+	mTextureLeases.resize(keepLeases);
+	while(mCreatedTextures.size() > keepCreated) {
+		mTextureManager->destroyTexture(mCreatedTextures.back());
+		mCreatedTextures.pop_back();
+	}
+}
+
 void textureImporter::preparePixelBuffer(Ogre::uint32 componentOffset, const tinygltf::Image* sourceImage)
 {
 	mPixelBuffer.assign(sourceImage->image.size(), 0);
@@ -85,38 +105,58 @@ Ogre::TextureGpu* textureImporter::getTexture(
 		default: throw LoadingError("Unsupported Ogre PBS texture type");
 	}
 
+	const Ogre::uint32 flags = Ogre::TextureFlags::ManualTexture | Ogre::TextureFlags::AutomaticBatching;
+	const auto upload = [&](const Ogre::String& name) -> Ogre::TextureGpu* {
+		Ogre::Image2 ogreImage;
+		ogreImage.createEmptyImage(image.width, image.height, 1, Ogre::TextureTypes::Type2D, pixelFormat);
+		std::memcpy(ogreImage.getRawBuffer(), imageData, sizeInBytes);
+		if(!ogreImage.generateMipmaps(false, Ogre::Image2::FILTER_GAUSSIAN_HIGH) &&
+		   (image.width > 1 || image.height > 1))
+			OgreLog("Could not generate mipmaps for glTF texture '" + name + "'; uploading the base level only");
+
+		Ogre::TextureGpu* ogreTexture = nullptr;
+		try {
+			ogreTexture = mTextureManager->createOrRetrieveTexture(
+				name,
+				Ogre::GpuPageOutStrategy::Discard, flags,
+				Ogre::TextureTypes::Type2D,
+				Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME,
+				filters);
+			ogreTexture->setResolution(ogreImage.getWidth(), ogreImage.getHeight());
+			ogreTexture->setPixelFormat(ogreImage.getPixelFormat());
+			ogreTexture->setNumMipmaps(ogreImage.getNumMipmaps());
+			ogreTexture->scheduleTransitionTo(Ogre::GpuResidency::Resident);
+			ogreImage.uploadTo(ogreTexture, 0, ogreImage.getNumMipmaps() - 1u);
+			return ogreTexture;
+		} catch(...) {
+			if(ogreTexture) mTextureManager->destroyTexture(ogreTexture);
+			throw;
+		}
+	};
+
+	if(mTexturePool) {
+		texturePool::Descriptor descriptor {
+			static_cast<Ogre::uint32>(image.width), static_cast<Ogre::uint32>(image.height),
+			pixelFormat, texType, filters, flags,
+			std::vector<std::uint8_t>(imageData, imageData + sizeInBytes)
+		};
+		auto lease = mTexturePool->acquire(std::move(descriptor), upload);
+		mTextureLeases.push_back(lease);
+		return lease->texture;
+	}
+
 	const auto name = "glTF_texture_" + std::to_string(mId) + "_" + image.name + "_" +
 		texTypeasString + "_" + std::to_string(glTFTextureIndex) + "_" +
 		std::to_string(static_cast<int>(pixelFormat));
-
 	auto texture = mTextureManager->findTextureNoThrow(name);
-	if(texture)
-	{
-		OgreLog("texture: '" + name + "' Already loaded in Ogre::TextureGpuManager");
-		return texture;
+	if(texture) return texture;
+	texture = upload(name);
+	try {
+		mCreatedTextures.push_back(texture);
+	} catch(...) {
+		mTextureManager->destroyTexture(texture);
+		throw;
 	}
-	OgreLog("Can't find texure '" + name + "'. Generating it from glTF");
-
-	Ogre::Image2 ogreImage;
-	ogreImage.createEmptyImage(image.width, image.height, 1, Ogre::TextureTypes::Type2D, pixelFormat);
-	std::memcpy(ogreImage.getRawBuffer(), imageData, sizeInBytes);
-	if(!ogreImage.generateMipmaps(false, Ogre::Image2::FILTER_GAUSSIAN_HIGH) &&
-	   (image.width > 1 || image.height > 1))
-		OgreLog("Could not generate mipmaps for glTF texture '" + name + "'; uploading the base level only");
-
-	Ogre::TextureGpu* ogreTexture;
-	ogreTexture = mTextureManager->createOrRetrieveTexture(
-		name,
-		Ogre::GpuPageOutStrategy::Discard, Ogre::TextureFlags::ManualTexture | Ogre::TextureFlags::AutomaticBatching,
-		Ogre::TextureTypes::Type2D,
-		Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME,
-	    filters);
-
-	ogreTexture->setResolution(ogreImage.getWidth(), ogreImage.getHeight());
-	ogreTexture->setPixelFormat(ogreImage.getPixelFormat());
-	ogreTexture->setNumMipmaps(ogreImage.getNumMipmaps());
-	ogreTexture->scheduleTransitionTo(Ogre::GpuResidency::Resident);
-	ogreImage.uploadTo(ogreTexture, 0, ogreImage.getNumMipmaps() - 1u);
-	return ogreTexture;
+	return texture;
 }
 
