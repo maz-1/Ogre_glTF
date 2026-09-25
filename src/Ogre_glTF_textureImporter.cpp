@@ -14,10 +14,9 @@
 
 using namespace Ogre_glTF;
 
-size_t textureImporter::mId { 0 };
+std::atomic<size_t> textureImporter::mNextId { 0 };
 
-textureImporter::textureImporter(tinygltf::Model& input) : mModel { input } { 
-	mId++; 
+textureImporter::textureImporter(tinygltf::Model& input) : mId { mNextId.fetch_add(1, std::memory_order_relaxed) }, mModel { input } {
 	const auto renderSystem	= Ogre::Root::getSingleton().getRenderSystem();
 	mTextureManager = renderSystem->getTextureGpuManager();
 }
@@ -35,7 +34,12 @@ Ogre::TextureGpu* textureImporter::getTexture(
 	Ogre::PixelFormatGpu inputPixelFormat)
 {
 
-	const auto& image = mModel.images[glTFTextureIndex];
+	if(glTFTextureIndex < 0 || static_cast<size_t>(glTFTextureIndex) >= mModel.textures.size())
+		throw LoadingError("glTF texture index is out of range");
+	const int imageIndex = mModel.textures[glTFTextureIndex].source;
+	if(imageIndex < 0 || static_cast<size_t>(imageIndex) >= mModel.images.size())
+		throw LoadingError("glTF texture has no valid image source");
+	const auto& image = mModel.images[imageIndex];
 	// Color maps use sRGB; normal, metalness and roughness data stay linear.
 	const auto pixelFormat = (texType == Ogre::PBSM_DIFFUSE || texType == Ogre::PBSM_EMISSIVE)
 		? Ogre::PixelFormatGpu::PFG_RGBA8_UNORM_SRGB : inputPixelFormat;
@@ -81,7 +85,9 @@ Ogre::TextureGpu* textureImporter::getTexture(
 		default: throw LoadingError("Unsupported Ogre PBS texture type");
 	}
 
-	const auto name = "glTF_texture_" + image.name + "_" + texTypeasString + "_" + std::to_string(glTFTextureIndex);
+	const auto name = "glTF_texture_" + std::to_string(mId) + "_" + image.name + "_" +
+		texTypeasString + "_" + std::to_string(glTFTextureIndex) + "_" +
+		std::to_string(static_cast<int>(pixelFormat));
 
 	auto texture = mTextureManager->findTextureNoThrow(name);
 	if(texture)

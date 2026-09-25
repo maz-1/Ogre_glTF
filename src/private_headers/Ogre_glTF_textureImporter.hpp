@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tiny_gltf.h"
+#include <atomic>
 #include <unordered_map>
 #include <OgreTextureGpu.h>
 #include <OgreTextureGpuManager.h>
@@ -21,8 +22,9 @@ namespace Ogre_glTF
 		///List of the loaded basic textures
 		std::unordered_map<int, Ogre::TextureGpu *> mLoadedTextures;
 
-		///Static counter to make unique texture name. Incremented by constructor
-		static size_t mId;
+		///Unique namespace for this model's textures and material datablocks
+		static std::atomic<size_t> mNextId;
+		const size_t mId;
 
 		///Reference to the tinygltf
 		tinygltf::Model& mModel;
@@ -33,9 +35,12 @@ namespace Ogre_glTF
 
 
 	public:
-		///Construct the texture importer object. Inrement the id counter
+		///Construct the texture importer and assign its unique import identifier
 		/// \param input reference to the model that we are loading
 		textureImporter(tinygltf::Model& input);
+
+		///Identifier shared by this model's Ogre textures and material datablocks
+		size_t getImportId() const { return mId; }
 
 		Ogre::TextureGpu* getTexture(
 			int glTFTextureIndex, 

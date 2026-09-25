@@ -1,6 +1,7 @@
 #include "Ogre_glTF_materialLoader.hpp"
 #include "Ogre_glTF_textureImporter.hpp"
 #include "Ogre_glTF_common.hpp"
+#include "Ogre_glTF.hpp"
 #include <OgreHlmsPbsDatablock.h>
 #include <OgreHlms.h>
 #include <OgreHlmsManager.h>
@@ -127,30 +128,40 @@ void materialLoader::setAlphaCutoff(Ogre::HlmsPbsDatablock* block, Ogre::Real va
 Ogre::HlmsDatablock* materialLoader::getDatablock(size_t index) const
 {
 	OgreLog("Loading material...");
+	if(index >= model.materials.size())
+		throw LoadingError("glTF material index is out of range");
 	auto HlmsPbs			 = static_cast<Ogre::HlmsPbs*>(Ogre::Root::getSingleton().getHlmsManager()->getHlms(Ogre::HlmsTypes::HLMS_PBS));
 	const auto material		 = model.materials[index];
+	const auto name = "glTF_material_" + std::to_string(textureImporterRef.getImportId()) + "_" +
+		std::to_string(index) + "_" + material.name;
+	const Ogre::IdString nameId(name);
 
-	auto datablock = static_cast<Ogre::HlmsPbsDatablock*>(HlmsPbs->getDatablock(Ogre::IdString(material.name)));
+	auto datablock = static_cast<Ogre::HlmsPbsDatablock*>(HlmsPbs->getDatablock(nameId));
 	
 	if(datablock){
-		OgreLog("Found HlmsPbsDatablock " + material.name + " in Ogre::HlmsPbs");
+		OgreLog("Found HlmsPbsDatablock " + name + " in Ogre::HlmsPbs");
 		return datablock;
 	}
 
 	datablock = static_cast<Ogre::HlmsPbsDatablock*>(HlmsPbs->createDatablock(
-		Ogre::IdString(material.name),
-		material.name,
+		nameId,
+		name,
 		Ogre::HlmsMacroblock {},
 		Ogre::HlmsBlendblock {},
 		Ogre::HlmsParamVec {}));
 
-	datablock->setWorkflow(Ogre::HlmsPbsDatablock::Workflows::MetallicWorkflow);
+	try {
+		datablock->setWorkflow(Ogre::HlmsPbsDatablock::Workflows::MetallicWorkflow);
 
-	for(const auto& content : material.values) 
-		handleMaterialValue(datablock, content.first, &content.second);	
-	
-	for(const auto& content : material.additionalValues) 
-		handleMaterialValue(datablock, content.first, &content.second);	
+		for(const auto& content : material.values)
+			handleMaterialValue(datablock, content.first, &content.second);
+
+		for(const auto& content : material.additionalValues)
+			handleMaterialValue(datablock, content.first, &content.second);
+	} catch(...) {
+		HlmsPbs->destroyDatablock(nameId);
+		throw;
+	}
 
 	return datablock;
 }
