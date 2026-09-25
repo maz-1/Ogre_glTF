@@ -1,11 +1,12 @@
 #include "Ogre_glTF_textureImporter.hpp"
 #include "Ogre_glTF_common.hpp"
+#include <cstring>
 #include <OgreLogManager.h>
 #include <OgreColourValue.h>
+#include <OgreImage2.h>
 #include <OgreRoot.h>
 
 #include "OgreConfigFile.h"
-#include <OgreMemoryAllocatorConfig.h>
 #include "OgreTextureFilters.h"
 #include "Ogre_glTF.hpp"
 #include "OgrePrerequisites.h"
@@ -23,18 +24,9 @@ textureImporter::textureImporter(tinygltf::Model& input) : mModel { input } {
 
 void textureImporter::preparePixelBuffer(Ogre::uint32 componentOffset, const tinygltf::Image* sourceImage)
 {
-	int index;
-	int newSize = sourceImage->width * sourceImage->height * 4; 
-	mPixelBuffer.resize(newSize);
-	auto sourceOffset = sourceImage->image.data() + componentOffset;
-	for(auto y = 0; y < sourceImage->height; ++y)
-	{
-		for(auto x = 0; x < sourceImage->width; ++x)
-		{
-			index		   = (x + y * sourceImage->width) * 4;
-			mPixelBuffer[index] = sourceOffset[index];
-		}
-	}
+	mPixelBuffer.assign(sourceImage->image.size(), 0);
+	for(size_t index = 0; index < mPixelBuffer.size(); index += 4)
+		mPixelBuffer[index] = sourceImage->image[index + componentOffset];
 }
 
 Ogre::TextureGpu* textureImporter::getTexture(
@@ -44,7 +36,19 @@ Ogre::TextureGpu* textureImporter::getTexture(
 {
 
 	const auto& image = mModel.images[glTFTextureIndex];
-	Ogre::uchar* imageData;
+	// Color maps use sRGB; normal, metalness and roughness data stay linear.
+	const auto pixelFormat = (texType == Ogre::PBSM_DIFFUSE || texType == Ogre::PBSM_EMISSIVE)
+		? Ogre::PixelFormatGpu::PFG_RGBA8_UNORM_SRGB : inputPixelFormat;
+	if(image.width <= 0 || image.height <= 0 || image.bits != 8 || image.component != 4 ||
+	   image.pixel_type != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+		throw LoadingError("Only 8-bit RGBA glTF images are supported by the texture importer");
+
+	const auto sizeInBytes = Ogre::PixelFormatGpuUtils::calculateSizeBytes(
+		image.width, image.height, 1, 1, pixelFormat, 1, 4);
+	if(image.image.size() != sizeInBytes)
+		throw LoadingError("Decoded glTF image size does not match its dimensions and pixel format");
+
+	const Ogre::uchar* imageData = nullptr;
 	Ogre::uint32 filters = Ogre::TextureFilter::TypeGenerateDefaultMipmaps;
 	Ogre::String texTypeasString;
 
@@ -52,15 +56,15 @@ Ogre::TextureGpu* textureImporter::getTexture(
 		case Ogre::PbsTextureTypes::PBSM_NORMAL: 
 			filters        |= Ogre::TextureFilter::TypePrepareForNormalMapping;
 			texTypeasString = "NORMAL";
-			imageData		= const_cast<Ogre::uchar*>(image.image.data());
+			imageData		= image.image.data();
 			break;
 		case Ogre::PbsTextureTypes::PBSM_DIFFUSE: 
 			texTypeasString = "DIFFUSE";
-			imageData		= const_cast<Ogre::uchar*>(image.image.data());
+			imageData		= image.image.data();
 			break;
 		case Ogre::PbsTextureTypes::PBSM_EMISSIVE: 
 			texTypeasString = "EMISSIVE";
-			imageData		= const_cast<Ogre::uchar*>(image.image.data());
+			imageData		= image.image.data();
 			break;
 		case Ogre::PbsTextureTypes::PBSM_ROUGHNESS:
 			filters |= Ogre::TextureFilter::TypeLeaveChannelR;
@@ -74,6 +78,7 @@ Ogre::TextureGpu* textureImporter::getTexture(
 			preparePixelBuffer(2, &image);
 			imageData		= mPixelBuffer.data();
 			break;
+		default: throw LoadingError("Unsupported Ogre PBS texture type");
 	}
 
 	const auto name = "glTF_texture_" + image.name + "_" + texTypeasString + "_" + std::to_string(glTFTextureIndex);
@@ -85,7 +90,14 @@ Ogre::TextureGpu* textureImporter::getTexture(
 		return texture;
 	}
 	OgreLog("Can't find texure '" + name + "'. Generating it from glTF");
-	
+
+	Ogre::Image2 ogreImage;
+	ogreImage.createEmptyImage(image.width, image.height, 1, Ogre::TextureTypes::Type2D, pixelFormat);
+	std::memcpy(ogreImage.getRawBuffer(), imageData, sizeInBytes);
+	if(!ogreImage.generateMipmaps(false, Ogre::Image2::FILTER_GAUSSIAN_HIGH) &&
+	   (image.width > 1 || image.height > 1))
+		OgreLog("Could not generate mipmaps for glTF texture '" + name + "'; uploading the base level only");
+
 	Ogre::TextureGpu* ogreTexture;
 	ogreTexture = mTextureManager->createOrRetrieveTexture(
 		name,
@@ -94,22 +106,11 @@ Ogre::TextureGpu* textureImporter::getTexture(
 		Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME,
 	    filters);
 
-	ogreTexture->setResolution(image.width, image.height);
-	ogreTexture->setPixelFormat(inputPixelFormat);
-	ogreTexture->setNumMipmaps(Ogre::PixelFormatGpuUtils::getMaxMipmapCount(image.width, image.height, 1));
-
-	ogreTexture->_transitionTo(Ogre::GpuResidency::Resident, nullptr);
-	ogreTexture->_setNextResidencyStatus(Ogre::GpuResidency::Resident);
-
-	auto sizeInBytes = Ogre::PixelFormatGpuUtils::calculateSizeBytes(image.width, image.height, 1, 1, inputPixelFormat, 1, 4);
-	auto buffer = reinterpret_cast<std::uint8_t*>(OGRE_MALLOC_SIMD(sizeInBytes, Ogre::MEMCATEGORY_RESOURCE));
-
-	Ogre::Image2 ogreImage;
-	ogreImage.loadDynamicImage(buffer, image.width, image.height, 1, Ogre::TextureTypes::Type2D, inputPixelFormat, true, 1);
-
-	std::memcpy(buffer, imageData, sizeInBytes);
-	ogreImage.generateMipmaps(ogreTexture->prefersLoadingFromFileAsSRGB(), Ogre::Image2::FILTER_GAUSSIAN_HIGH);
-	ogreImage.uploadTo(ogreTexture, 0, ogreImage.getNumMipmaps() - 1);
+	ogreTexture->setResolution(ogreImage.getWidth(), ogreImage.getHeight());
+	ogreTexture->setPixelFormat(ogreImage.getPixelFormat());
+	ogreTexture->setNumMipmaps(ogreImage.getNumMipmaps());
+	ogreTexture->scheduleTransitionTo(Ogre::GpuResidency::Resident);
+	ogreImage.uploadTo(ogreTexture, 0, ogreImage.getNumMipmaps() - 1u);
 	return ogreTexture;
 }
 
