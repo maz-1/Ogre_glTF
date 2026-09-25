@@ -21,7 +21,7 @@ Library and Plugin to use glTF 2.0 resources with Ogre 2.1 licencied under the t
 
 
  - Ogre 2.1 built for source (lattest commit available)
- - C++14 compliant compiler (any modern-ish version of Visual Studio or GCC will do)
+ - C++14 and C11 compliant compilers (the tinygltf v3 parser is compiled as C)
  
 
 `CI` builds are currently performed on Windows under Visual Studio 2017 and on Linux under g++7
@@ -153,6 +153,7 @@ This project is currently in developement, here's a list of features that we are
  - Library is not "installable" from CMakeLists.txt yet. Users need to get the .dll / .so file accessible to their program, and point their compiler to look for headers the "include" directory
  - Can only load one mesh and it's associated material in a file. Will either load the first one, of the fist node of the default scene, depending if the default scene is set
  - Library only has been tested on an handfull of glTF files, so some corner cases may make it not work.
+ - Sparse accessors and `CUBICSPLINE` animation interpolation are not supported by the mesh and skeleton importers.
 
  
 ## Contributors
@@ -173,11 +174,11 @@ Here's the list of the contributors that hepled out with this projet:
 ## Notes on third party components
 
 
-`tinygltf` is an header only library. It is included in this very repository via git submodules.
+`tinygltf` v3 and `ScopeExit` are included as Git submodules.
 If you are about to clone this repository, you should use `git clone --recursive`
 
 
-The library define inside one of it's files the implementation of `tinygltf` and `stb_image`. This shouldn't be an issue and your program using ogre_glTF shouldn't be affected by them in any way. Everything is hidden inside a [pimpl](http://en.cppreference.com/w/cpp/language/pimpl)
+The library compiles tinygltf's C11 parser, copies the parsed fields it needs, and releases the parser model with a ScopeExit guard. Image bytes are decoded with the stb_image header bundled in tinygltf. ScopeExit also guards temporary image data and incomplete GPU texture uploads. These dependencies remain private to the library; consumers only need the public headers in `include`.
 
 
 If you have issues related with them, please open an issue :)

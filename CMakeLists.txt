@@ -4,6 +4,9 @@ project(Ogre_glTF)
 
 #to build a library
 set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 #set(CMAKE_INSTALL_PREFIX "./output")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG=1 -D_DEBUG=1") 
@@ -41,7 +44,15 @@ endif ()
 #find_package(OGRE COMPONENTS HlmsPbs REQUIRED)
 file(GLOB librarySources ./src/*.cpp ./src/private_headers/*.hpp ./include/*.hpp)
 list(APPEND librarySources ${CMAKE_CURRENT_SOURCE_DIR}/src/Ogre_glTF_texturePool.cpp)
+list(APPEND librarySources
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ogre_glTF_gltfModel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ogre_glTF_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ogre_glTF_imageDecode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/thirdParty/tinygltf/tiny_gltf_v3.c)
 list(REMOVE_DUPLICATES librarySources)
+
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/thirdParty/tinygltf/tiny_gltf_v3.c
+    PROPERTIES COMPILE_DEFINITIONS TINYGLTF3_ENABLE_FS)
 
 add_library(${PROJECT_NAME} ${Ogre_glTF_LIB_TYPE} ${librarySources})
 
@@ -62,8 +73,10 @@ target_include_directories( Ogre_glTF PUBLIC
     ${OGRE_INCLUDE_DIR}/Hlms/Pbs
 	#local include directory
 	./include
+	PRIVATE
 	./src/private_headers
 	./thirdParty/tinygltf/
+	./thirdParty/ScopeExit/include
 )
 
 target_link_libraries(Ogre_glTF

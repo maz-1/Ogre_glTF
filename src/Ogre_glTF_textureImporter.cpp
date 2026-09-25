@@ -1,10 +1,12 @@
 #include "Ogre_glTF_textureImporter.hpp"
 #include "Ogre_glTF_common.hpp"
 #include <cstring>
+#include <utility>
 #include <OgreLogManager.h>
 #include <OgreColourValue.h>
 #include <OgreImage2.h>
 #include <OgreRoot.h>
+#include <ScopeExit/ScopeExit.h>
 
 #include "OgreConfigFile.h"
 #include "OgreTextureFilters.h"
@@ -16,7 +18,7 @@ using namespace Ogre_glTF;
 
 std::atomic<size_t> textureImporter::mNextId { 0 };
 
-textureImporter::textureImporter(tinygltf::Model& input) : mId { mNextId.fetch_add(1, std::memory_order_relaxed) }, mModel { input } {
+textureImporter::textureImporter(gltf::Model& input) : mId { mNextId.fetch_add(1, std::memory_order_relaxed) }, mModel { input } {
 	const auto renderSystem	= Ogre::Root::getSingleton().getRenderSystem();
 	mTextureManager = renderSystem->getTextureGpuManager();
 }
@@ -41,7 +43,7 @@ void textureImporter::releaseTexturesSince(size_t keepLeases, size_t keepCreated
 	}
 }
 
-void textureImporter::preparePixelBuffer(Ogre::uint32 componentOffset, const tinygltf::Image* sourceImage)
+void textureImporter::preparePixelBuffer(Ogre::uint32 componentOffset, const gltf::Image* sourceImage)
 {
 	mPixelBuffer.assign(sourceImage->image.size(), 0);
 	for(size_t index = 0; index < mPixelBuffer.size(); index += 4)
@@ -64,7 +66,7 @@ Ogre::TextureGpu* textureImporter::getTexture(
 	const auto pixelFormat = (texType == Ogre::PBSM_DIFFUSE || texType == Ogre::PBSM_EMISSIVE)
 		? Ogre::PixelFormatGpu::PFG_RGBA8_UNORM_SRGB : inputPixelFormat;
 	if(image.width <= 0 || image.height <= 0 || image.bits != 8 || image.component != 4 ||
-	   image.pixel_type != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+	   image.pixel_type != TG3_COMPONENT_TYPE_UNSIGNED_BYTE)
 		throw LoadingError("Only 8-bit RGBA glTF images are supported by the texture importer");
 
 	const auto sizeInBytes = Ogre::PixelFormatGpuUtils::calculateSizeBytes(
@@ -115,23 +117,24 @@ Ogre::TextureGpu* textureImporter::getTexture(
 			OgreLog("Could not generate mipmaps for glTF texture '" + name + "'; uploading the base level only");
 
 		Ogre::TextureGpu* ogreTexture = nullptr;
-		try {
-			ogreTexture = mTextureManager->createOrRetrieveTexture(
-				name,
-				Ogre::GpuPageOutStrategy::Discard, flags,
-				Ogre::TextureTypes::Type2D,
-				Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME,
-				filters);
-			ogreTexture->setResolution(ogreImage.getWidth(), ogreImage.getHeight());
-			ogreTexture->setPixelFormat(ogreImage.getPixelFormat());
-			ogreTexture->setNumMipmaps(ogreImage.getNumMipmaps());
-			ogreTexture->scheduleTransitionTo(Ogre::GpuResidency::Resident);
-			ogreImage.uploadTo(ogreTexture, 0, ogreImage.getNumMipmaps() - 1u);
-			return ogreTexture;
-		} catch(...) {
-			if(ogreTexture) mTextureManager->destroyTexture(ogreTexture);
-			throw;
-		}
+		bool uploaded = false;
+		auto releaseOnFailure = [&] {
+			if(ogreTexture && !uploaded) mTextureManager->destroyTexture(ogreTexture);
+		};
+		ScopeExit::ScopeExit<decltype(releaseOnFailure)> guard(std::move(releaseOnFailure));
+		ogreTexture = mTextureManager->createOrRetrieveTexture(
+			name,
+			Ogre::GpuPageOutStrategy::Discard, flags,
+			Ogre::TextureTypes::Type2D,
+			Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME,
+			filters);
+		ogreTexture->setResolution(ogreImage.getWidth(), ogreImage.getHeight());
+		ogreTexture->setPixelFormat(ogreImage.getPixelFormat());
+		ogreTexture->setNumMipmaps(ogreImage.getNumMipmaps());
+		ogreTexture->scheduleTransitionTo(Ogre::GpuResidency::Resident);
+		ogreImage.uploadTo(ogreTexture, 0, ogreImage.getNumMipmaps() - 1u);
+		uploaded = true;
+		return ogreTexture;
 	};
 
 	if(mTexturePool) {

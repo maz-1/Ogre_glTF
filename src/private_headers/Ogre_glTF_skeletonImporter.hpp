@@ -1,6 +1,6 @@
 #pragma once
 
-#include <tiny_gltf.h>
+#include "Ogre_glTF_gltfModel.hpp"
 #include <OgrePrerequisites.h>
 #include <OgreOldBone.h>
 #include <sstream>
@@ -11,7 +11,7 @@ namespace Ogre_glTF
 	class skeletonImporter
 	{
 		///Reference to the model
-		tinygltf::Model& model;
+		gltf::Model& model;
 
 		using tinygltfJointNodeIndex = int;
 
@@ -49,7 +49,7 @@ namespace Ogre_glTF
 		using keyFrameList = std::vector<keyFrame>;
 
 		///Type for a list of animation channels
-		using channelList = std::vector<std::reference_wrapper<tinygltf::AnimationChannel>>;
+		using channelList = std::vector<std::reference_wrapper<gltf::AnimationChannel>>;
 
 		///Type for holding the mapping beween Bone index and glTF nodes
 		using nodeIndexConversionMap = std::unordered_map<tinygltfJointNodeIndex, tinygltfJointNodeIndex>;
@@ -61,31 +61,31 @@ namespace Ogre_glTF
 		std::vector<Ogre::Matrix4> bindMatrices;
 
 		///Load from an animation channel sampler the time data, and ore it inside the keyframe
-		void loadTimepointFromSamplerToKeyFrame(int bone, int frameID, int& count, keyFrame& animationFrame, tinygltf::AnimationSampler& sampler);
+		void loadTimepointFromSamplerToKeyFrame(int bone, int frameID, int& count, keyFrame& animationFrame, gltf::AnimationSampler& sampler);
 
 		///Load vector of 3 doubles or 3 floats from the animation sampler, and store them into a vector
-		void loadVector3FromSampler(int frameID, int& count, tinygltf::AnimationSampler& sampler, Ogre::Vector3& vector);
+		void loadVector3FromSampler(int frameID, int& count, gltf::AnimationSampler& sampler, Ogre::Vector3& vector);
 
 		///Load vector of 4 doubles or 4 floats from the animation sampler, and store them into a quaternion
-		void loadQuatFromSampler(int frameID, int& count, tinygltf::AnimationSampler& sampler, Ogre::Quaternion& quat) const;
+		void loadQuatFromSampler(int frameID, int& count, gltf::AnimationSampler& sampler, Ogre::Quaternion& quat) const;
 
 		///Goes throught the list of animation channel, and assign the 4 given pointers to the one that correspond to it
-		void detectAnimationChannel(const channelList& channels, tinygltf::AnimationChannel*& translation, tinygltf::AnimationChannel*& rotation, tinygltf::AnimationChannel*& scale, tinygltf::AnimationChannel*& weights) const;
+		void detectAnimationChannel(const channelList& channels, gltf::AnimationChannel*& translation, gltf::AnimationChannel*& rotation, gltf::AnimationChannel*& scale, gltf::AnimationChannel*& weights) const;
 
 		///Load keyframe data from the samplers of each AnimationChannel into a KeyFrame object
-		void loadKeyFrameDataFromSampler(const tinygltf::Animation& animation, int bone, tinygltf::AnimationChannel* translation, tinygltf::AnimationChannel* rotation, tinygltf::AnimationChannel* scale, tinygltf::AnimationChannel* weights, int frameID, int& count, keyFrame& animationFrame);
+		void loadKeyFrameDataFromSampler(const gltf::Animation& animation, int bone, gltf::AnimationChannel* translation, gltf::AnimationChannel* rotation, gltf::AnimationChannel* scale, gltf::AnimationChannel* weights, int frameID, int& count, keyFrame& animationFrame);
 
 		///Load all keyframes for the animation
-		void loadKeyFrames(const tinygltf::Animation& animation, int bone, keyFrameList& keyFrames, tinygltf::AnimationChannel* translation, tinygltf::AnimationChannel* rotation, tinygltf::AnimationChannel* scale, tinygltf::AnimationChannel* weights);
+		void loadKeyFrames(const gltf::Animation& animation, int bone, keyFrameList& keyFrames, gltf::AnimationChannel* translation, gltf::AnimationChannel* rotation, gltf::AnimationChannel* scale, gltf::AnimationChannel* weights);
 
 		///All all animation for the skeleton
-		void loadSkeletonAnimations(tinygltf::Skin skin, const std::string& skeletonName);
+		void loadSkeletonAnimations(gltf::Skin skin, const std::string& skeletonName);
 
 	public:
 		///Construct the skeleton importer
 		/// \param input model where the skeleton data is loaded from
 		/// \param importId unique identifier for this imported asset
-		skeletonImporter(tinygltf::Model& input, size_t importId);
+		skeletonImporter(gltf::Model& input, size_t importId);
 
 		///Return the constructed skeleton pointer
 		Ogre::v1::SkeletonPtr getSkeleton(size_t index);

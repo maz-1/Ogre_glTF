@@ -10,7 +10,7 @@
 
 using namespace Ogre_glTF;
 
-materialLoader::materialLoader(tinygltf::Model& input, textureImporter& textureInterface) : 
+materialLoader::materialLoader(gltf::Model& input, textureImporter& textureInterface) :
 	textureImporterRef { textureInterface }, 
 	model { input } 
 {}
@@ -30,13 +30,6 @@ void materialLoader::releaseCreatedDatablocksSince(size_t keepCount)
 		}
 		createdDatablocks.pop_back();
 	}
-}
-
-Ogre::Vector3 materialLoader::convertColor(const tinygltf::ColorValue& color)
-{
-	std::array<Ogre::Real, 4> colorBuffer{};
-	internal_utils::container_double_to_real(color, colorBuffer);
-	return Ogre::Vector3 { colorBuffer.data() };
 }
 
 void materialLoader::setBaseColor(Ogre::HlmsPbsDatablock* block, Ogre::Vector3 color) const
@@ -125,13 +118,7 @@ void materialLoader::setEmissiveTexture(Ogre::HlmsPbsDatablock* block, int value
 
 void materialLoader::setAlphaMode(Ogre::HlmsPbsDatablock* block, const std::string& mode) const
 {
-	if(mode == "BLEND")
-	{
-		auto blendBlock = *block->getBlendblock();
-		blendBlock.setBlendType(Ogre::SBT_TRANSPARENT_ALPHA);
-		block->setBlendblock(blendBlock);
-	}
-	else if(mode =="MASK")
+	if(mode == "MASK")
 	{
 		block->setAlphaTest( Ogre::CMPF_GREATER_EQUAL );
 	}
@@ -148,7 +135,7 @@ Ogre::HlmsDatablock* materialLoader::getDatablock(size_t index) const
 	if(index >= model.materials.size())
 		throw LoadingError("glTF material index is out of range");
 	auto HlmsPbs			 = static_cast<Ogre::HlmsPbs*>(Ogre::Root::getSingleton().getHlmsManager()->getHlms(Ogre::HlmsTypes::HLMS_PBS));
-	const auto material		 = model.materials[index];
+	const auto& material	 = model.materials[index];
 	const auto baseName = "glTF_material_" + std::to_string(textureImporterRef.getImportId()) + "_" +
 		std::to_string(index) + "_" + material.name;
 	auto assigned = assignedDatablockNames.find(index);
@@ -175,12 +162,31 @@ Ogre::HlmsDatablock* materialLoader::getDatablock(size_t index) const
 		Ogre::HlmsParamVec {}));
 		createdDatablocks.push_back(name);
 		datablock->setWorkflow(Ogre::HlmsPbsDatablock::Workflows::MetallicWorkflow);
-
-		for(const auto& content : material.values)
-			handleMaterialValue(datablock, content.first, &content.second);
-
-		for(const auto& content : material.additionalValues)
-			handleMaterialValue(datablock, content.first, &content.second);
+		const auto& pbr = material.pbrMetallicRoughness;
+		setBaseColor(datablock, Ogre::Vector3(
+			static_cast<Ogre::Real>(pbr.baseColorFactor[0]),
+			static_cast<Ogre::Real>(pbr.baseColorFactor[1]),
+			static_cast<Ogre::Real>(pbr.baseColorFactor[2])));
+		const auto alpha = static_cast<Ogre::Real>(pbr.baseColorFactor[3]);
+		if(material.alphaMode == "BLEND")
+			datablock->setTransparency(alpha, Ogre::HlmsPbsDatablock::Transparent);
+		else if(material.alphaMode == "MASK")
+			datablock->setTransparency(alpha, Ogre::HlmsPbsDatablock::None);
+		else
+			datablock->setTransparency(1.0f, Ogre::HlmsPbsDatablock::None, false);
+		if(material.doubleSided) datablock->setTwoSidedLighting(true);
+		setMetallicValue(datablock, static_cast<Ogre::Real>(pbr.metallicFactor));
+		setRoughnesValue(datablock, static_cast<Ogre::Real>(pbr.roughnessFactor));
+		setEmissiveColor(datablock, Ogre::Vector3(
+			static_cast<Ogre::Real>(material.emissiveFactor[0]),
+			static_cast<Ogre::Real>(material.emissiveFactor[1]),
+			static_cast<Ogre::Real>(material.emissiveFactor[2])));
+		setAlphaMode(datablock, material.alphaMode);
+		setAlphaCutoff(datablock, static_cast<Ogre::Real>(material.alphaCutoff));
+		setBaseColorTexture(datablock, pbr.baseColorTexture.index);
+		setMetalRoughTexture(datablock, pbr.metallicRoughnessTexture.index);
+		setNormalTexture(datablock, material.normalTexture.index);
+		setEmissiveTexture(datablock, material.emissiveTexture.index);
 	} catch(...) {
 		if(!createdDatablocks.empty() && createdDatablocks.back() == name)
 			createdDatablocks.pop_back();
@@ -192,40 +198,17 @@ Ogre::HlmsDatablock* materialLoader::getDatablock(size_t index) const
 	return datablock;
 }
 
-void materialLoader::handleMaterialValue(Ogre::HlmsPbsDatablock* dataBlock, std::string key,const tinygltf::Parameter* param) const
-{ 
-	if (key == "baseColorTexture") { 
-		setBaseColorTexture(dataBlock, param->TextureIndex());
-	} else if (key == "metallicRoughnessTexture"){
-		setMetalRoughTexture(dataBlock, param->TextureIndex());
-	} else if(key == "normalTexture"){
-		setNormalTexture(dataBlock, param->TextureIndex());
-	} else if(key == "emissiveTexture"){
-		setEmissiveTexture(dataBlock, param->TextureIndex());
-	} else if(key == "baseColorFactor"){
-		setBaseColor(dataBlock, convertColor(param->ColorFactor()));
-		// Need to set the alpha channel separately
-		float alpha			 = float(param->number_array[3]);
-		auto transparentMode = (alpha == 1) ? Ogre::HlmsPbsDatablock::None : Ogre::HlmsPbsDatablock::Transparent;
-		dataBlock->setTransparency(alpha, transparentMode);
-	} else if(key == "metallicFactor"){
-		setMetallicValue(dataBlock, static_cast<float>(param->Factor()));
-	} else if(key == "roughnessFactor"){
-		setRoughnesValue(dataBlock, static_cast<float>(param->Factor()));
-	} else if(key == "emissiveFactor"){
-		setEmissiveColor(dataBlock, convertColor(param->ColorFactor()));
-	} else if(key == "alphaMode"){
-		setAlphaMode(dataBlock, param->string_value);
-	} else if(key == "alphaCutoff"){
-		setAlphaCutoff(dataBlock, static_cast<Ogre::Real>(param->number_value));
-	} else {
-		OgreLog("Ogre_glTF unhandled material param: '" + key + "'");
-	}
-}
-
 size_t materialLoader::getDatablockCount() const //todo this could use some refactoring. This information is actually fetched like, twice.
 {
-	const auto mainMeshIndex = (model.defaultScene != 0 ? model.nodes[model.scenes[model.defaultScene].nodes.front()].mesh : 0);
-	const auto& mesh = model.meshes[mainMeshIndex];
-	return mesh.primitives.size();
+	if(model.meshes.empty()) return 0;
+	if(model.defaultScene >= 0 && static_cast<size_t>(model.defaultScene) < model.scenes.size()) {
+		for(const int nodeIndex : model.scenes[model.defaultScene].nodes) {
+			if(nodeIndex >= 0 && static_cast<size_t>(nodeIndex) < model.nodes.size()) {
+				const int meshIndex = model.nodes[nodeIndex].mesh;
+				if(meshIndex >= 0 && static_cast<size_t>(meshIndex) < model.meshes.size())
+					return model.meshes[meshIndex].primitives.size();
+			}
+		}
+	}
+	return model.meshes.front().primitives.size();
 }

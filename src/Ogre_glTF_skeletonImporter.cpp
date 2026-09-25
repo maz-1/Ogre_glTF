@@ -7,8 +7,60 @@
 #include <OgreLogManager.h>
 #include <OgreKeyFrame.h>
 #include "Ogre_glTF.hpp"
+#include <algorithm>
+#include <limits>
 
 using namespace Ogre_glTF;
+
+namespace
+{
+struct AccessorData
+{
+	const gltf::Accessor& accessor;
+	const unsigned char* data;
+	std::size_t stride;
+};
+
+AccessorData resolveAccessor(const gltf::Model& model, int accessorIndex)
+{
+	if(accessorIndex < 0 || static_cast<std::size_t>(accessorIndex) >= model.accessors.size())
+		throw LoadingError("glTF animation or skin accessor index is out of range");
+	const auto& accessor = model.accessors[accessorIndex];
+	if(accessor.isSparse)
+		throw LoadingError("Sparse glTF animation and skin accessors are not supported");
+	if(accessor.bufferView < 0 || static_cast<std::size_t>(accessor.bufferView) >= model.bufferViews.size())
+		throw LoadingError("glTF animation or skin accessor has no valid bufferView");
+	const auto& view = model.bufferViews[accessor.bufferView];
+	if(view.buffer < 0 || static_cast<std::size_t>(view.buffer) >= model.buffers.size())
+		throw LoadingError("glTF bufferView has no valid buffer");
+	const auto& buffer = model.buffers[view.buffer];
+	const int componentSize = tg3_component_size(accessor.componentType);
+	const int componentCount = tg3_num_components(accessor.type);
+	const int stride = accessor.ByteStride(view);
+	if(componentSize <= 0 || componentCount <= 0 || stride <= 0 ||
+	   static_cast<std::size_t>(stride) < static_cast<std::size_t>(componentSize) * componentCount)
+		throw LoadingError("glTF animation or skin accessor has an invalid component type or stride");
+	if(view.byteOffset > buffer.data.size() || view.byteLength > buffer.data.size() - view.byteOffset ||
+	   accessor.byteOffset > view.byteLength)
+		throw LoadingError("glTF animation or skin accessor byte range is outside its buffer");
+	const auto elementSize = static_cast<std::size_t>(componentSize) * componentCount;
+	const auto available = view.byteLength - accessor.byteOffset;
+	if(accessor.count > 0 &&
+	   (elementSize > available ||
+	    accessor.count - 1 > (available - elementSize) / static_cast<std::size_t>(stride)))
+		throw LoadingError("glTF animation or skin accessor elements exceed their bufferView");
+	return { accessor,
+		buffer.data.empty() ? nullptr : buffer.data.data() + view.byteOffset + accessor.byteOffset,
+		static_cast<std::size_t>(stride) };
+}
+
+void requireFrame(const gltf::Accessor& accessor, int frameID)
+{
+	if(frameID < 0 || static_cast<std::size_t>(frameID) >= accessor.count ||
+	   accessor.count > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+		throw LoadingError("glTF animation frame index is out of range");
+}
+}
 
 void skeletonImporter::addChidren(const std::vector<int>& childs, Ogre::v1::OldBone* parent)
 {
@@ -75,7 +127,7 @@ void skeletonImporter::loadBoneHierarchy(int boneIndex)
 	addChidren(node.children, rootBone);
 }
 
-skeletonImporter::skeletonImporter(tinygltf::Model& input, size_t importId) : model { input }, importId { importId } {}
+skeletonImporter::skeletonImporter(gltf::Model& input, size_t importId) : model { input }, importId { importId } {}
 
 void skeletonImporter::releaseCreatedSkeletonsSince(size_t keepCount)
 {
@@ -92,22 +144,24 @@ void skeletonImporter::releaseCreatedSkeletonsSince(size_t keepCount)
 	nodeToJointMap.clear();
 }
 
-void skeletonImporter::loadTimepointFromSamplerToKeyFrame(int bone, int frameID, int& count, keyFrame& animationFrame, tinygltf::AnimationSampler& sampler)
+void skeletonImporter::loadTimepointFromSamplerToKeyFrame(int bone, int frameID, int& count, keyFrame& animationFrame, gltf::AnimationSampler& sampler)
 {
-	auto& input				 = model.accessors[sampler.input];
+	const auto source = resolveAccessor(model, sampler.input);
+	const auto& input = source.accessor;
+	requireFrame(input, frameID);
 	count					 = static_cast<int>(input.count);
-	auto& bufferView		 = model.bufferViews[input.bufferView];
-	auto& buffer			 = model.buffers[bufferView.buffer];
-	unsigned char* dataStart = buffer.data.data() + bufferView.byteOffset + input.byteOffset;
-	const size_t byteStride  = input.ByteStride(bufferView);
-
-	assert(input.type == TINYGLTF_TYPE_SCALAR); //Need to be a scalar, since it's a timepoint
-	float data;
-	if(input.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) { data = *reinterpret_cast<float*>(dataStart + frameID * byteStride); }
-	else if(input.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE)
+	if(input.type != TG3_TYPE_SCALAR)
+		throw LoadingError("glTF animation time accessor must be scalar");
+	const auto* frameData = source.data + static_cast<std::size_t>(frameID) * source.stride;
+	float data = 0.0f;
+	if(input.componentType == TG3_COMPONENT_TYPE_FLOAT) { memcpy(&data, frameData, sizeof(data)); }
+	else if(input.componentType == TG3_COMPONENT_TYPE_DOUBLE)
 	{
-		data = static_cast<float>(*reinterpret_cast<double*>(dataStart + frameID * byteStride));
+		double value = 0.0;
+		memcpy(&value, frameData, sizeof(value));
+		data = static_cast<float>(value);
 	}
+	else throw LoadingError("Unsupported glTF animation time component type");
 
 	if(animationFrame.timePoint < 0)
 		animationFrame.timePoint = data;
@@ -120,84 +174,89 @@ void skeletonImporter::loadTimepointFromSamplerToKeyFrame(int bone, int frameID,
 	}
 }
 
-void skeletonImporter::loadVector3FromSampler(int frameID, int& count, tinygltf::AnimationSampler& sampler, Ogre::Vector3& vector)
+void skeletonImporter::loadVector3FromSampler(int frameID, int& count, gltf::AnimationSampler& sampler, Ogre::Vector3& vector)
 {
-	auto& output			 = model.accessors[sampler.output];
+	const auto source = resolveAccessor(model, sampler.output);
+	const auto& output = source.accessor;
+	requireFrame(output, frameID);
 	count					 = static_cast<int>(output.count);
-	auto& bufferView		 = model.bufferViews[output.bufferView];
-	auto& buffer			 = model.buffers[bufferView.buffer];
-	unsigned char* dataStart = buffer.data.data() + bufferView.byteOffset + output.byteOffset;
-	const size_t byteStride  = output.ByteStride(bufferView);
-
-	assert(output.type == TINYGLTF_TYPE_VEC3); //Need to be a 3D vector since it's a translation vector
-
-	if(output.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) { vector = Ogre::Vector3(reinterpret_cast<float*>(dataStart + frameID * byteStride)); }
-	else if(output.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) //need double to float conversion
+	if(output.type != TG3_TYPE_VEC3)
+		throw LoadingError("glTF animation vector accessor must be VEC3");
+	const auto* frameData = source.data + static_cast<std::size_t>(frameID) * source.stride;
+	if(output.componentType == TG3_COMPONENT_TYPE_FLOAT)
+	{
+		std::array<float, 3> values {};
+		memcpy(values.data(), frameData, sizeof(values));
+		vector = Ogre::Vector3(values.data());
+	}
+	else if(output.componentType == TG3_COMPONENT_TYPE_DOUBLE) //need double to float conversion
 	{
 		std::array<Ogre::Real, 3> vectFloat {};
 		std::array<double, 3> vectDouble {};
 
-		memcpy(vectDouble.data(), reinterpret_cast<double*>(dataStart + frameID * byteStride), 3 * sizeof(double));
+		memcpy(vectDouble.data(), frameData, sizeof(vectDouble));
 		internal_utils::container_double_to_real(vectDouble, vectFloat);
 
 		vector = Ogre::Vector3(vectFloat.data());
 	}
+	else throw LoadingError("Unsupported glTF animation vector component type");
 }
 
-void skeletonImporter::loadQuatFromSampler(int frameID, int& count, tinygltf::AnimationSampler& sampler, Ogre::Quaternion& quat) const
+void skeletonImporter::loadQuatFromSampler(int frameID, int& count, gltf::AnimationSampler& sampler, Ogre::Quaternion& quat) const
 {
-	auto& output			 = model.accessors[sampler.output];
+	const auto source = resolveAccessor(model, sampler.output);
+	const auto& output = source.accessor;
+	requireFrame(output, frameID);
 	count					 = static_cast<int>(output.count);
-	auto& bufferView		 = model.bufferViews[output.bufferView];
-	auto& buffer			 = model.buffers[bufferView.buffer];
-	unsigned char* dataStart = buffer.data.data() + bufferView.byteOffset + output.byteOffset;
-	const size_t byteStride  = output.ByteStride(bufferView);
+	if(output.type != TG3_TYPE_VEC4)
+		throw LoadingError("glTF animation rotation accessor must be VEC4");
+	const auto* frameData = source.data + static_cast<std::size_t>(frameID) * source.stride;
 
-	assert(output.type == TINYGLTF_TYPE_VEC4); //Need to be a 4D vector since it's a quaternion
-
-	if(output.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
+	if(output.componentType == TG3_COMPONENT_TYPE_FLOAT)
 	{
-		float* quat_data = reinterpret_cast<float*>(dataStart + frameID * byteStride);
-		quat			 = Ogre::Quaternion(quat_data[3], quat_data[0], quat_data[1], quat_data[2]);
+		std::array<float, 4> values {};
+		memcpy(values.data(), frameData, sizeof(values));
+		quat = Ogre::Quaternion(values[3], values[0], values[1], values[2]);
 	}
-	else if(output.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) //need double to float conversion
+	else if(output.componentType == TG3_COMPONENT_TYPE_DOUBLE) //need double to float conversion
 	{
 		std::array<Ogre::Real, 4> vectFloat {};
 		std::array<double, 4> vectDouble {};
 
-		memcpy(vectDouble.data(), reinterpret_cast<double*>(dataStart + frameID * byteStride), 4 * sizeof(double));
+		memcpy(vectDouble.data(), frameData, sizeof(vectDouble));
 		internal_utils::container_double_to_real(vectDouble, vectFloat);
 
 		quat = Ogre::Quaternion(vectFloat[3], vectFloat[0], vectFloat[1], vectFloat[2]);
 	}
+	else throw LoadingError("Unsupported glTF animation rotation component type");
 }
 
 void skeletonImporter::detectAnimationChannel(const channelList& channels,
-											  tinygltf::AnimationChannel*& translation,
-											  tinygltf::AnimationChannel*& rotation,
-											  tinygltf::AnimationChannel*& scale,
-											  tinygltf::AnimationChannel*& weights) const
+											  gltf::AnimationChannel*& translation,
+											  gltf::AnimationChannel*& rotation,
+											  gltf::AnimationChannel*& scale,
+											  gltf::AnimationChannel*& weights) const
 {
 	const auto translationIt
-		= std::find_if(channels.begin(), channels.end(), [](const tinygltf::AnimationChannel& c) { return c.target_path == "translation"; });
+		= std::find_if(channels.begin(), channels.end(), [](const gltf::AnimationChannel& c) { return c.target_path == "translation"; });
 	if(translationIt != channels.end()) translation = &(*translationIt).get();
 
-	const auto rotationIt = std::find_if(channels.begin(), channels.end(), [](const tinygltf::AnimationChannel& c) { return c.target_path == "rotation"; });
+	const auto rotationIt = std::find_if(channels.begin(), channels.end(), [](const gltf::AnimationChannel& c) { return c.target_path == "rotation"; });
 	if(rotationIt != channels.end()) rotation = &(*rotationIt).get();
 
-	const auto scaleIt = std::find_if(channels.begin(), channels.end(), [](const tinygltf::AnimationChannel& c) { return c.target_path == "scale"; });
+	const auto scaleIt = std::find_if(channels.begin(), channels.end(), [](const gltf::AnimationChannel& c) { return c.target_path == "scale"; });
 	if(scaleIt != channels.end()) scale = &(*scaleIt).get();
 
-	const auto weightsIt = std::find_if(channels.begin(), channels.end(), [](const tinygltf::AnimationChannel& c) { return c.target_path == "weights"; });
+	const auto weightsIt = std::find_if(channels.begin(), channels.end(), [](const gltf::AnimationChannel& c) { return c.target_path == "weights"; });
 	if(weightsIt != channels.end()) weights = &(*weightsIt).get();
 }
 
-void skeletonImporter::loadKeyFrameDataFromSampler(const tinygltf::Animation& animation,
+void skeletonImporter::loadKeyFrameDataFromSampler(const gltf::Animation& animation,
 												   int bone,
-												   tinygltf::AnimationChannel* translation,
-												   tinygltf::AnimationChannel* rotation,
-												   tinygltf::AnimationChannel* scale,
-												   tinygltf::AnimationChannel* weights,
+												   gltf::AnimationChannel* translation,
+												   gltf::AnimationChannel* rotation,
+												   gltf::AnimationChannel* scale,
+												   gltf::AnimationChannel* weights,
 												   int frameID,
 												   int& count,
 												   keyFrame& animationFrame)
@@ -228,13 +287,13 @@ void skeletonImporter::loadKeyFrameDataFromSampler(const tinygltf::Animation& an
 	}
 }
 
-void skeletonImporter::loadKeyFrames(const tinygltf::Animation& animation,
+void skeletonImporter::loadKeyFrames(const gltf::Animation& animation,
 									 int bone,
 									 keyFrameList& keyFrames,
-									 tinygltf::AnimationChannel* translation,
-									 tinygltf::AnimationChannel* rotation,
-									 tinygltf::AnimationChannel* scale,
-									 tinygltf::AnimationChannel* weights)
+									 gltf::AnimationChannel* translation,
+									 gltf::AnimationChannel* rotation,
+									 gltf::AnimationChannel* scale,
+									 gltf::AnimationChannel* weights)
 {
 	bool endOfTimeLine = false;
 	int frameID		   = 0;
@@ -251,11 +310,11 @@ void skeletonImporter::loadKeyFrames(const tinygltf::Animation& animation,
 	}
 }
 
-void skeletonImporter::loadSkeletonAnimations(const tinygltf::Skin skin, const std::string& skeletonName)
+void skeletonImporter::loadSkeletonAnimations(const gltf::Skin skin, const std::string& skeletonName)
 {
 	//List all the animations that own at least one channel that target one of the bones of our skeleton
 	OgreLog("Searching for animations for skeleton " + skeleton->getName());
-	std::vector<std::reference_wrapper<tinygltf::Animation>> animations;
+	std::vector<std::reference_wrapper<gltf::Animation>> animations;
 	for(auto& animation : model.animations)
 	{
 		for(const auto& channel : animation.channels)
@@ -308,10 +367,10 @@ void skeletonImporter::loadSkeletonAnimations(const tinygltf::Skin skin, const s
 
 				keyFrameList keyFrames;
 
-				tinygltf::AnimationChannel* translation = nullptr;
-				tinygltf::AnimationChannel* rotation	= nullptr;
-				tinygltf::AnimationChannel* scale		= nullptr;
-				tinygltf::AnimationChannel* weights		= nullptr;
+				gltf::AnimationChannel* translation = nullptr;
+				gltf::AnimationChannel* rotation	= nullptr;
+				gltf::AnimationChannel* scale		= nullptr;
+				gltf::AnimationChannel* weights		= nullptr;
 
 				detectAnimationChannel(channels, translation, rotation, scale, weights);
 				loadKeyFrames(animation, bone, keyFrames, translation, rotation, scale, weights);
@@ -354,13 +413,13 @@ void skeletonImporter::loadSkeletonAnimations(const tinygltf::Skin skin, const s
 	}
 }
 
-void recurse(const tinygltf::Model& m, int node, std::vector<int>& output)
+void recurse(const gltf::Model& m, int node, std::vector<int>& output)
 {
 	output.push_back(node);
 	for(auto child : m.nodes[node].children) { recurse(m, child, output); }
 }
 
-std::vector<int> traversal(const tinygltf::Model& m, int node)
+std::vector<int> traversal(const gltf::Model& m, int node)
 {
 	std::vector<int> o;
 	recurse(m, node, o);
@@ -397,31 +456,37 @@ Ogre::v1::SkeletonPtr skeletonImporter::getSkeleton(size_t index)
 
 	//OgreLog("skin.skeleton = " + std::to_string(skin.skeleton));
 	//OgreLog("first joint : " + std::to_string(skin.joints.front()));
+	if(skin.inverseBindMatrices == -1)
 	{
-		const auto inverseBindMatricesID		= skin.inverseBindMatrices;
-		const auto& inverseBindMatricesAccessor = model.accessors[inverseBindMatricesID];
-		const auto& bufferView					= model.bufferViews[inverseBindMatricesAccessor.bufferView];
-		const auto byteStride					= inverseBindMatricesAccessor.ByteStride(bufferView);
-		const auto& buffer						= model.buffers[bufferView.buffer];
-		const unsigned char* dataStart			= buffer.data.data() + bufferView.byteOffset + inverseBindMatricesAccessor.byteOffset;
-
-		assert(inverseBindMatricesAccessor.count == skin.joints.size());
-		assert(inverseBindMatricesAccessor.type == TINYGLTF_TYPE_MAT4);
+		bindMatrices.assign(skin.joints.size(), Ogre::Matrix4::IDENTITY);
+	}
+	else
+	{
+		const auto source = resolveAccessor(model, skin.inverseBindMatrices);
+		const auto& inverseBindMatricesAccessor = source.accessor;
+		if(inverseBindMatricesAccessor.count < skin.joints.size() ||
+		   inverseBindMatricesAccessor.type != TG3_TYPE_MAT4 ||
+		   (inverseBindMatricesAccessor.componentType != TG3_COMPONENT_TYPE_FLOAT &&
+		    inverseBindMatricesAccessor.componentType != TG3_COMPONENT_TYPE_DOUBLE))
+			throw LoadingError("glTF inverse bind matrices must contain a floating-point MAT4 for every joint");
 
 		std::array<Ogre::Real, 4 * 4> floatMatrix {};
 
-		for(int i = 0; i < inverseBindMatricesAccessor.count; ++i)
+		for(std::size_t i = 0; i < skin.joints.size(); ++i)
 		{
-			if(inverseBindMatricesAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
+			const unsigned char* frameData = source.data + i * source.stride;
+			if(inverseBindMatricesAccessor.componentType == TG3_COMPONENT_TYPE_FLOAT)
 			{
-				//Copy inside a float array the 16 floats
-				memcpy(floatMatrix.data(), reinterpret_cast<const float*>(dataStart + i * byteStride), 4 * 4 * sizeof(float));
+				std::array<float, 4 * 4> sourceMatrix {};
+				memcpy(sourceMatrix.data(), frameData, sizeof(sourceMatrix));
+				std::transform(sourceMatrix.begin(), sourceMatrix.end(), floatMatrix.begin(),
+					[](float value) { return static_cast<Ogre::Real>(value); });
 			}
-			else if(inverseBindMatricesAccessor.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE)
+			else if(inverseBindMatricesAccessor.componentType == TG3_COMPONENT_TYPE_DOUBLE)
 			{
 				//Needs to do Double -> Float conversion
 				std::array<double, 4 * 4> doubleMatrix {};
-				memcpy(doubleMatrix.data(), reinterpret_cast<const double*>(dataStart + i * byteStride), 4 * 4 * sizeof(double));
+				memcpy(doubleMatrix.data(), frameData, sizeof(doubleMatrix));
 				internal_utils::container_double_to_real(doubleMatrix, floatMatrix);
 			}
 

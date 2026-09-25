@@ -1,7 +1,7 @@
 #pragma once
 #include <Ogre.h>
 #include "OgreMesh2.h"
-#include <tiny_gltf.h>
+#include "Ogre_glTF_gltfModel.hpp"
 #include "Ogre_glTF.hpp"
 #include <sstream>
 #include <Vao/OgreVaoManager.h>
@@ -160,7 +160,7 @@ namespace Ogre_glTF
 		///Construct a modelConverter from a model
 		/// \param input model we are converting into an Ogre model
 		/// \param importId unique identifier for this imported asset
-		modelConverter(tinygltf::Model& input, size_t importId);
+		modelConverter(gltf::Model& input, size_t importId);
 
 		///Returns the mesh with the given name in the glTF file.
 		Ogre::MeshPtr getOgreMesh(const Ogre::String& name);
@@ -202,7 +202,7 @@ namespace Ogre_glTF
 		Ogre::VertexBufferPackedVec constructVertexBuffer(const std::vector<vertexBufferPart>& parts) const;
 
 		///Reference to a loaded model
-		tinygltf::Model& model;
+		gltf::Model& model;
 		///The import owns a private namespace in Ogre's global mesh manager.
 		const size_t importId;
 		std::vector<Ogre::MeshPtr> createdMeshes;

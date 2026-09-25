@@ -7,14 +7,11 @@
 #include "Ogre_glTF_textureImporter.hpp"
 #include "Ogre_glTF_materialLoader.hpp"
 #include "Ogre_glTF_skeletonImporter.hpp"
+#include "Ogre_glTF_parser.hpp"
+#include "Ogre_glTF_imageDecode.hpp"
 #include "Ogre_glTF_common.hpp"
 #include "Ogre_glTF_OgreResource.hpp"
 #include "Ogre_glTF_internal_utils.hpp"
-
-#define TINYGLTF_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "tiny_gltf.h"
 
 #include <OgreItem.h>
 #include <OgreMesh2.h>
@@ -49,13 +46,10 @@ struct loaderAdapter::impl
 	};
 
 	///The model object that data will be loaded into and read from
-	tinygltf::Model model;
+	gltf::Model model;
 
-	///Where tinygltf will write it's error status
+	///Error reported by the parser or image decoder.
 	std::string error = "";
-
-	///Where tinygltf will write it's warning messages
-	std::string warnings = "";
 
 	///Texture importer object : go through the texture array and load them into Ogre
 	textureImporter textureImp;
@@ -188,7 +182,8 @@ Ogre::SceneNode* loaderAdapter::getSceneNode(size_t index, Ogre::SceneNode* pare
 		for(size_t i = 0; i < mesh.primitives.size(); ++i) 
 		{ 
 			auto subItem = item->getSubItem(i);
-			subItem->setDatablock(getDatablock(mesh.primitives[i].material));
+			if(mesh.primitives[i].material >= 0)
+				subItem->setDatablock(getDatablock(mesh.primitives[i].material));
 		}
 		sceneNode->attachObject(item);
 
@@ -300,7 +295,8 @@ void loaderAdapter::createTagPoints(int boneIndex, Ogre::SkeletonInstance* skele
 			for(size_t i = 0; i < mesh.primitives.size(); ++i) 
 			{ 
 				auto subItem = item->getSubItem(i);
-				subItem->setDatablock(getDatablock(mesh.primitives[i].material));
+				if(mesh.primitives[i].material >= 0)
+					subItem->setDatablock(getDatablock(mesh.primitives[i].material));
 			}
 			tagPoint->attachObject(item);
 
@@ -448,63 +444,24 @@ SceneInstance ManagedAsset::instantiate(Ogre::SceneNode* parentNode, Ogre::Scene
 ///Implementation of the glTF loader. Exist as a pImpl inside the glTFLoader class
 struct glTFLoader::glTFLoaderImpl
 {
-	///The loader object from TinyGLTF
-	tinygltf::TinyGLTF loader;
-
-	///Constructor. the loader is on the stack, there isn't much state to set inside the object
-	glTFLoaderImpl() { OgreLog("initialized TinyGLTF loader"); }
-
-	///For file type detection. Ascii is plain old JSON text, Binary is .glc files.
-	enum class FileType { Ascii, Binary, Unknown };
-
-	///Probe inside the file, or check the extension to determine if we have to load a text file, or a binary file
-	FileType detectType(const std::string& path) const
-	{
-		//Quickly open the file as binary and check if there's the gltf binary magic number
-		{
-			auto probe = std::ifstream(path, std::ios_base::binary);
-			if(!probe) throw FileIOError("Could not open " + path);
-
-			std::array<char, 5> buffer {};
-			for(size_t i { 0 }; i < 4; ++i) probe >> buffer[i];
-			buffer[4] = 0;
-
-			if(std::string("glTF") == std::string(buffer.data()))
-			{
-				//OgreLog("Detected binary file thanks to the magic number at the start!");
-				return FileType::Binary;
-			}
-		}
-
-		//If we don't have any better, check the file extension.
-		auto extension = path.substr(path.find_last_of('.') + 1);
-		std::transform(std::begin(extension), std::end(extension), std::begin(extension), [](char c) { return char(tolower(int(c))); });
-		if(extension == "gltf") return FileType::Ascii;
-		if(extension == "glb") return FileType::Binary;
-
-		return FileType::Unknown;
-	}
+	glTFLoaderImpl() { OgreLog("initialized TinyGLTF v3 C parser"); }
 
 	///Load the content of a file into an adapter object
 	bool loadInto(loaderAdapter& adapter, const std::string& path)
 	{
-		switch(detectType(path))
-		{
-			default:
-			case FileType::Unknown: return false;
-			case FileType::Ascii:
-				//OgreLog("Detected ascii file type");
-				return loader.LoadASCIIFromFile(&adapter.pimpl->model, &adapter.pimpl->error, &adapter.pimpl->warnings, path);
-			case FileType::Binary:
-				//OgreLog("Deteted binary file type");
-				return loader.LoadBinaryFromFile(&adapter.pimpl->model, &adapter.pimpl->error, &adapter.pimpl->warnings, path);
-		}
+		if(!gltf::parseFile(adapter.pimpl->model, adapter.pimpl->error, path)) return false;
+		try { gltf::decodeImages(adapter.pimpl->model); }
+		catch(const std::exception& e) { adapter.pimpl->error = e.what(); return false; }
+		return true;
 	}
 
 	bool loadGlb(loaderAdapter& adapter, GlbFilePtr file)
 	{
-		return loader.LoadBinaryFromMemory(
-			&adapter.pimpl->model, &adapter.pimpl->error, &adapter.pimpl->warnings, file->getData(), int(file->getSize()), ".", 0);
+		if(!gltf::parseGlb(adapter.pimpl->model, adapter.pimpl->error,
+			file->getData(), file->getSize(), ".")) return false;
+		try { gltf::decodeImages(adapter.pimpl->model); }
+		catch(const std::exception& e) { adapter.pimpl->error = e.what(); return false; }
+		return true;
 	}
 };
 

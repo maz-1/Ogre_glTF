@@ -1,5 +1,5 @@
 #pragma once
-#include "tiny_gltf.h"
+#include "Ogre_glTF_gltfModel.hpp"
 #include <OgreHlms.h>
 #include <OgreHlmsPbs.h>
 #include <vector>
@@ -17,11 +17,9 @@ namespace Ogre_glTF
 		///Reference to the texture importer that deal with the current model's material
 		textureImporter& textureImporterRef;
 		///The model
-		tinygltf::Model& model;
+		gltf::Model& model;
 		mutable std::vector<Ogre::String> createdDatablocks;
 		mutable std::unordered_map<size_t, Ogre::String> assignedDatablockNames;
-
-		static Ogre::Vector3 convertColor(const tinygltf::ColorValue& color);
 
 		///Set the diffuse color of the material
 		/// \param block datablock to set
@@ -79,13 +77,11 @@ namespace Ogre_glTF
 		/// \param value Alpha cutoff value
 		void setAlphaCutoff(Ogre::HlmsPbsDatablock* block, Ogre::Real value) const;
 
-		void handleMaterialValue(Ogre::HlmsPbsDatablock* dataBlock, std::string key,const tinygltf::Parameter* param) const;
-
 	public:
 		///Construct the material loader
 		/// \param input model to load material from
 		/// \param textureInterface the texture importer to get Ogre texture from
-		materialLoader(tinygltf::Model& input, textureImporter& textureInterface);
+		materialLoader(gltf::Model& input, textureImporter& textureInterface);
 		///Get the material (the HlmsDatablock)
 		Ogre::HlmsDatablock* getDatablock(size_t index = 0) const;
 		const std::vector<Ogre::String>& getCreatedDatablocks() const { return createdDatablocks; }

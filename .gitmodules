@@ -1,3 +1,6 @@
 [submodule "thirdParty/tinygltf"]
 	path = thirdParty/tinygltf
 	url = https://github.com/syoyo/tinygltf
+[submodule "thirdParty/ScopeExit"]
+	path = thirdParty/ScopeExit
+	url = https://github.com/SergiusTheBest/ScopeExit.git

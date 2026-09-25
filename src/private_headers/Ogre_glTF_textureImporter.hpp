@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tiny_gltf.h"
+#include "Ogre_glTF_gltfModel.hpp"
 #include <atomic>
 #include <unordered_map>
 #include <OgreTextureGpu.h>
@@ -28,7 +28,7 @@ namespace Ogre_glTF
 		const size_t mId;
 
 		///Reference to the tinygltf
-		tinygltf::Model& mModel;
+		gltf::Model& mModel;
 
 		Ogre::TextureGpuManager* mTextureManager;
 
@@ -41,7 +41,7 @@ namespace Ogre_glTF
 	public:
 		///Construct the texture importer and assign its unique import identifier
 		/// \param input reference to the model that we are loading
-		textureImporter(tinygltf::Model& input);
+		textureImporter(gltf::Model& input);
 
 		///Identifier shared by this model's Ogre textures and material datablocks
 		size_t getImportId() const { return mId; }
@@ -56,6 +56,6 @@ namespace Ogre_glTF
 			Ogre::PbsTextureTypes texType, 
 			Ogre::PixelFormatGpu inputPixelFormat=Ogre::PixelFormatGpu::PFG_RGBA8_UNORM);
 
-		void preparePixelBuffer(Ogre::uint32 componentOffset, const tinygltf::Image* sourceImage);
+		void preparePixelBuffer(Ogre::uint32 componentOffset, const gltf::Image* sourceImage);
 	};
 }
