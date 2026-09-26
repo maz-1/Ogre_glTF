@@ -174,7 +174,7 @@ Here's the list of the contributors that hepled out with this projet:
 ## Notes on third party components
 
 
-`tinygltf` v3 and `ScopeExit` are included as Git submodules.
+`tinygltf` v3 is included as a Git submodule. The `ScopeExit` header and its MIT license are included directly in `thirdParty/ScopeExit`.
 If you are about to clone this repository, you should use `git clone --recursive`
 
 
