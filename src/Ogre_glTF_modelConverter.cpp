@@ -332,12 +332,18 @@ Ogre::MeshPtr modelConverter::getOgreMesh(size_t meshIdx)
 			parts.push_back(std::move(extractVertexBuffer(atribute, boundingBox)));
 		}
 
-		//Assets exported without the TANGENT attribute can't use their normal map: build the tangent
-		//frame from positions, normals and texture coordinates instead
+		//Only primitives whose material samples a normal map need a tangent frame. Assets exported
+		//without the TANGENT attribute get the frame rebuilt from positions, normals and texture
+		//coordinates. Generating tangents for meshes that never sample a normal map would cost
+		//16 bytes per vertex (and the generation work) for nothing.
+		const bool needsTangents = primitive.material >= 0 &&
+			static_cast<size_t>(primitive.material) < model.materials.size() &&
+			model.materials[primitive.material].normalTexture.index >= 0;
+
 		const bool hasTangents = std::any_of(std::begin(parts), std::end(parts), [](const vertexBufferPart& part) {
 			return part.semantic == Ogre::VES_TANGENT;
 		});
-		if(!hasTangents)
+		if(needsTangents && !hasTangents)
 		{
 			auto tangentPart = generateTangentBuffer(model, parts, primitive);
 			if(tangentPart.buffer)
