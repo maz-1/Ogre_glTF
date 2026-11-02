@@ -20,8 +20,49 @@
 #include <OgreHlmsManager.h>
 #include <Animation/OgreTagPoint2.h>
 #include <Animation/OgreSkeletonInstance.h>
+#include <OgreSubMesh2.h>
+#include <Vao/OgreVertexArrayObject.h>
+#include <OgreHlmsPbsDatablock.h>
 
 using namespace Ogre_glTF;
+
+namespace
+{
+///Ogre's HlmsPbs refuses a datablock that references a normal map when the renderable has no
+///tangent vectors: it throws inside calculateHashForPreCreate and the renderable falls back to
+///the default datablock, so the glTF material never shows up. glTF assets frequently omit the
+///TANGENT attribute and Ogre_glTF doesn't generate tangents, so drop the normal map for those
+///meshes instead of losing the whole material.
+Ogre::HlmsDatablock* adaptDatablockToMesh(Ogre::HlmsDatablock* datablock, const Ogre::MeshPtr& mesh,
+                                          size_t subMeshIndex)
+{
+	auto* pbsDatablock = dynamic_cast<Ogre::HlmsPbsDatablock*>(datablock);
+	if(!pbsDatablock || !mesh || !pbsDatablock->getTexture(Ogre::PBSM_NORMAL))
+		return datablock;
+	if(subMeshIndex >= mesh->getNumSubMeshes())
+		return datablock;
+
+	const Ogre::VertexArrayObjectArray& vaos = mesh->getSubMesh(subMeshIndex)->mVao[Ogre::VpNormal];
+	for(const Ogre::VertexArrayObject* vao : vaos)
+	{
+		const Ogre::VertexElement2VecVec& declaration = vao->getVertexDeclaration();
+		for(const Ogre::VertexElement2Vec& bufferDeclaration : declaration)
+		{
+			for(const Ogre::VertexElement2& element : bufferDeclaration)
+			{
+				if(element.mSemantic == Ogre::VES_TANGENT)
+					return datablock;
+			}
+		}
+	}
+
+	pbsDatablock->setTexture(Ogre::PBSM_NORMAL, static_cast<Ogre::TextureGpu*>(nullptr));
+	const Ogre::String* datablockName = pbsDatablock->getNameStr();
+	OgreLog("Mesh has no tangent vectors: normal map removed from datablock " +
+			(datablockName ? *datablockName : Ogre::String("(unnamed)")));
+	return datablock;
+}
+}
 
 ///Implementaiton of the adapter
 struct loaderAdapter::impl
@@ -183,7 +224,7 @@ Ogre::SceneNode* loaderAdapter::getSceneNode(size_t index, Ogre::SceneNode* pare
 		{ 
 			auto subItem = item->getSubItem(i);
 			if(mesh.primitives[i].material >= 0)
-				subItem->setDatablock(getDatablock(mesh.primitives[i].material));
+				subItem->setDatablock(adaptDatablockToMesh(getDatablock(mesh.primitives[i].material), ogreMesh, i));
 		}
 		sceneNode->attachObject(item);
 
@@ -296,7 +337,7 @@ void loaderAdapter::createTagPoints(int boneIndex, Ogre::SkeletonInstance* skele
 			{ 
 				auto subItem = item->getSubItem(i);
 				if(mesh.primitives[i].material >= 0)
-					subItem->setDatablock(getDatablock(mesh.primitives[i].material));
+					subItem->setDatablock(adaptDatablockToMesh(getDatablock(mesh.primitives[i].material), ogreMesh, i));
 			}
 			tagPoint->attachObject(item);
 
