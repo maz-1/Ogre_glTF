@@ -50,6 +50,57 @@ void textureImporter::preparePixelBuffer(Ogre::uint32 componentOffset, const glt
 		mPixelBuffer[index] = sourceImage->image[index + componentOffset];
 }
 
+namespace
+{
+///glTF wrap modes use the OpenGL enumerants, Ogre uses its own TextureAddressingMode
+Ogre::TextureAddressingMode translateWrapMode(int gltfWrapMode)
+{
+	switch(gltfWrapMode)
+	{
+		case TG3_TEXTURE_WRAP_CLAMP_TO_EDGE: return Ogre::TAM_CLAMP;
+		case TG3_TEXTURE_WRAP_MIRRORED_REPEAT: return Ogre::TAM_MIRROR;
+		case TG3_TEXTURE_WRAP_REPEAT:
+		default: return Ogre::TAM_WRAP;
+	}
+}
+}
+
+Ogre::HlmsSamplerblock textureImporter::getSampler(int glTFTextureIndex) const
+{
+	const gltf::Sampler* sampler = nullptr;
+	if(glTFTextureIndex >= 0 && static_cast<size_t>(glTFTextureIndex) < mModel.textures.size())
+	{
+		const int samplerIndex = mModel.textures[glTFTextureIndex].sampler;
+		if(samplerIndex >= 0 && static_cast<size_t>(samplerIndex) < mModel.samplers.size())
+			sampler = &mModel.samplers[samplerIndex];
+	}
+
+	//glTF defaults: REPEAT wrapping, LINEAR magnification and LINEAR_MIPMAP_LINEAR minification.
+	//This matters: assets can store texture coordinates outside [0; 1] and rely on the wrapping,
+	//while the default Ogre samplerblock clamps, which smears the texture along one axis.
+	Ogre::HlmsSamplerblock params;
+	params.mU = translateWrapMode(sampler ? sampler->wrapS : TG3_TEXTURE_WRAP_REPEAT);
+	params.mV = translateWrapMode(sampler ? sampler->wrapT : TG3_TEXTURE_WRAP_REPEAT);
+	params.mW = params.mV;
+
+	//glTF filter enumerants: 9728 NEAREST, 9729 LINEAR, 9984..9987 the mipmapped variants
+	const int magFilter = sampler ? sampler->magFilter : -1;
+	params.mMagFilter = magFilter == 9728 ? Ogre::FO_POINT : Ogre::FO_LINEAR;
+
+	switch(sampler ? sampler->minFilter : -1)
+	{
+		case 9728: params.mMinFilter = Ogre::FO_POINT; params.mMipFilter = Ogre::FO_NONE; break;
+		case 9729: params.mMinFilter = Ogre::FO_LINEAR; params.mMipFilter = Ogre::FO_NONE; break;
+		case 9984: params.mMinFilter = Ogre::FO_POINT; params.mMipFilter = Ogre::FO_POINT; break;
+		case 9985: params.mMinFilter = Ogre::FO_LINEAR; params.mMipFilter = Ogre::FO_POINT; break;
+		case 9986: params.mMinFilter = Ogre::FO_POINT; params.mMipFilter = Ogre::FO_LINEAR; break;
+		case 9987:
+		default: params.mMinFilter = Ogre::FO_LINEAR; params.mMipFilter = Ogre::FO_LINEAR; break;
+	}
+
+	return params;
+}
+
 Ogre::TextureGpu* textureImporter::getTexture(
 	int glTFTextureIndex,
 	Ogre::PbsTextureTypes texType,

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <OgreTextureGpu.h>
+#include <OgreHlmsSamplerblock.h>
 #include <OgreTextureGpuManager.h>
 #include <OgrePixelFormatGpuUtils.h>
 #include <OgreTextureBox.h>
@@ -55,6 +56,10 @@ namespace Ogre_glTF
 			int glTFTextureIndex, 
 			Ogre::PbsTextureTypes texType, 
 			Ogre::PixelFormatGpu inputPixelFormat=Ogre::PixelFormatGpu::PFG_RGBA8_UNORM);
+
+		///Build the Ogre samplerblock described by the glTF sampler assigned to this texture
+		/// \param glTFTextureIndex index of the texture in the glTF file
+		Ogre::HlmsSamplerblock getSampler(int glTFTextureIndex) const;
 
 		void preparePixelBuffer(Ogre::uint32 componentOffset, const gltf::Image* sourceImage);
 	};

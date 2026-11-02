@@ -62,7 +62,10 @@ void materialLoader::setBaseColorTexture(Ogre::HlmsPbsDatablock* block, int valu
 	if(!isTextureIndexValid(value)) return;
 	auto texture = textureImporterRef.getTexture(value, Ogre::PbsTextureTypes::PBSM_DIFFUSE);
 	if(texture)
-		block->setTexture(Ogre::PbsTextureTypes::PBSM_DIFFUSE, texture);
+	{
+		const auto sampler = textureImporterRef.getSampler(value);
+		block->setTexture(Ogre::PbsTextureTypes::PBSM_DIFFUSE, texture, &sampler);
+	}
 }
 
 void materialLoader::setMetalRoughTexture(Ogre::HlmsPbsDatablock* block, int gltfTextureID) const
@@ -76,10 +79,16 @@ void materialLoader::setMetalRoughTexture(Ogre::HlmsPbsDatablock* block, int glt
 	auto roughTexure = textureImporterRef.getTexture(gltfTextureID, Ogre::PBSM_ROUGHNESS, Ogre::PixelFormatGpu::PFG_RGBA8_UNORM);
 	
 	if(metalTexure)
-		block->setTexture(Ogre::PBSM_METALLIC, metalTexure);
+	{
+		const auto sampler = textureImporterRef.getSampler(gltfTextureID);
+		block->setTexture(Ogre::PBSM_METALLIC, metalTexure, &sampler);
+	}
 
 	if(roughTexure)
-		block->setTexture(Ogre::PBSM_ROUGHNESS, roughTexure);
+	{
+		const auto sampler = textureImporterRef.getSampler(gltfTextureID);
+		block->setTexture(Ogre::PBSM_ROUGHNESS, roughTexure, &sampler);
+	}
 }
 
 void materialLoader::setNormalTexture(Ogre::HlmsPbsDatablock* block, int value) const
@@ -89,7 +98,8 @@ void materialLoader::setNormalTexture(Ogre::HlmsPbsDatablock* block, int value) 
 	//auto texture = textureImporterRef.getTexture(value);
 	if(texture)
 	{
-		block->setTexture(Ogre::PbsTextureTypes::PBSM_NORMAL, texture);
+		const auto sampler = textureImporterRef.getSampler(value);
+		block->setTexture(Ogre::PbsTextureTypes::PBSM_NORMAL, texture, &sampler);
 	}
 }
 
@@ -112,7 +122,8 @@ void materialLoader::setEmissiveTexture(Ogre::HlmsPbsDatablock* block, int value
 	if(texture)
 	{
 		//OgreLog("emissive texture from textureImporter : " + texture->getName());
-		block->setTexture(Ogre::PbsTextureTypes::PBSM_EMISSIVE, texture);
+		const auto sampler = textureImporterRef.getSampler(value);
+		block->setTexture(Ogre::PbsTextureTypes::PBSM_EMISSIVE, texture, &sampler);
 	}
 }
 
