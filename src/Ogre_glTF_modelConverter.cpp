@@ -3,6 +3,8 @@
 #include <OgreMesh2.h>
 #include <OgreMeshManager2.h>
 #include <OgreSubMesh2.h>
+#include <algorithm>
+#include <cmath>
 #include "Ogre_glTF_internal_utils.hpp"
 
 
@@ -49,6 +51,160 @@ AccessorData resolveAccessor(gltf::Model& model, int accessorIndex)
 		throw LoadingError("glTF accessor elements exceed their bufferView");
 	return { accessor, view, buffer, view.byteOffset + accessor.byteOffset,
 		static_cast<std::size_t>(stride) };
+}
+}
+
+namespace
+{
+///Tangent is stored the way Ogre's HlmsPbs expects for the "hlms_tangent4" path: xyz + handedness
+const Ogre::VertexElementType TangentElementType = Ogre::VET_FLOAT4;
+const size_t TangentElementCount = 4;
+
+const vertexBufferPart* findPart(const std::vector<vertexBufferPart>& parts, Ogre::VertexElementSemantic semantic)
+{
+	for(const auto& part : parts)
+	{
+		if(part.semantic == semantic && part.buffer) return &part;
+	}
+	return nullptr;
+}
+
+///Read a vertex attribute as float. Unsigned short attributes (texture coordinates) are decoded as
+///normalized values, like the glTF specification defines them.
+void readVertexAttribute(const vertexBufferPart& part, size_t vertexIndex, Ogre::Real* out, size_t componentCount)
+{
+	const auto* base = part.buffer->dataAddress() + vertexIndex * part.getPartStride();
+	if(part.type == Ogre::VET_FLOAT2 || part.type == Ogre::VET_FLOAT3 || part.type == Ogre::VET_FLOAT4)
+	{
+		const auto* values = reinterpret_cast<const Ogre::Real*>(base);
+		for(size_t i = 0; i < componentCount; ++i) out[i] = values[i];
+	}
+	else
+	{
+		const auto* values = reinterpret_cast<const Ogre::uint16*>(base);
+		for(size_t i = 0; i < componentCount; ++i) out[i] = static_cast<Ogre::Real>(values[i]) / 65535.0f;
+	}
+}
+
+///Read the indices of a primitive as 32 bits unsigned integers. Non indexed primitives get a
+///trivial 0..n-1 index list.
+std::vector<Ogre::uint32> readIndices(gltf::Model& model, int accessorIndex, size_t vertexCount)
+{
+	std::vector<Ogre::uint32> indices;
+	if(accessorIndex < 0)
+	{
+		indices.resize(vertexCount);
+		for(size_t i = 0; i < vertexCount; ++i) indices[i] = static_cast<Ogre::uint32>(i);
+		return indices;
+	}
+
+	const auto source = resolveAccessor(model, accessorIndex);
+	const auto& accessor = source.accessor;
+	const auto* base = source.buffer.data.data() + source.byteOffset;
+	indices.resize(accessor.count);
+	for(size_t i = 0; i < accessor.count; ++i)
+	{
+		const auto* element = base + i * source.byteStride;
+		switch(accessor.componentType)
+		{
+			case TG3_COMPONENT_TYPE_BYTE:
+			case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: indices[i] = *reinterpret_cast<const Ogre::uint8*>(element); break;
+			case TG3_COMPONENT_TYPE_SHORT:
+			case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: indices[i] = *reinterpret_cast<const Ogre::uint16*>(element); break;
+			default: indices[i] = *reinterpret_cast<const Ogre::uint32*>(element); break;
+		}
+	}
+	return indices;
+}
+
+///Generate a tangent vertex buffer part for a primitive that doesn't provide the TANGENT attribute.
+///HlmsPbs refuses to sample a normal map without tangents (the renderable falls back to the default
+///datablock), so the tangent frame is rebuilt from positions, normals and texture coordinates.
+///Returns a part with a null buffer when the primitive doesn't have the data needed to do so.
+vertexBufferPart generateTangentBuffer(gltf::Model& model, const std::vector<vertexBufferPart>& parts,
+                                       const gltf::Primitive& primitive)
+{
+	vertexBufferPart emptyPart { nullptr, TangentElementType, Ogre::VES_TANGENT, 0, TangentElementCount };
+	if(primitive.mode != TG3_MODE_TRIANGLES) return emptyPart;
+
+	const auto* positions = findPart(parts, Ogre::VES_POSITION);
+	const auto* normals = findPart(parts, Ogre::VES_NORMAL);
+	const auto* uvs = findPart(parts, Ogre::VES_TEXTURE_COORDINATES);
+	if(!positions || !normals || !uvs) return emptyPart;
+
+	const size_t vertexCount = positions->vertexCount;
+	if(vertexCount == 0) return emptyPart;
+
+	const auto indices = readIndices(model, primitive.indices, vertexCount);
+
+	std::vector<Ogre::Vector3> tangentSum(vertexCount, Ogre::Vector3::ZERO);
+	std::vector<Ogre::Vector3> bitangentSum(vertexCount, Ogre::Vector3::ZERO);
+
+	for(size_t i = 0; i + 2 < indices.size(); i += 3)
+	{
+		const size_t i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
+		if(i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
+
+		Ogre::Real p0[3], p1[3], p2[3], uv0[2], uv1[2], uv2[2];
+		readVertexAttribute(*positions, i0, p0, 3);
+		readVertexAttribute(*positions, i1, p1, 3);
+		readVertexAttribute(*positions, i2, p2, 3);
+		readVertexAttribute(*uvs, i0, uv0, 2);
+		readVertexAttribute(*uvs, i1, uv1, 2);
+		readVertexAttribute(*uvs, i2, uv2, 2);
+
+		const Ogre::Vector3 edge1(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+		const Ogre::Vector3 edge2(p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]);
+		const Ogre::Real du1 = uv1[0] - uv0[0];
+		const Ogre::Real dv1 = uv1[1] - uv0[1];
+		const Ogre::Real du2 = uv2[0] - uv0[0];
+		const Ogre::Real dv2 = uv2[1] - uv0[1];
+
+		const Ogre::Real determinant = du1 * dv2 - du2 * dv1;
+		if(std::abs(determinant) < 1e-12f) continue;
+		const Ogre::Real r = 1.0f / determinant;
+		const Ogre::Vector3 tangentDir = (edge1 * dv2 - edge2 * dv1) * r;
+		const Ogre::Vector3 bitangentDir = (edge2 * du1 - edge1 * du2) * r;
+
+		tangentSum[i0] += tangentDir;
+		tangentSum[i1] += tangentDir;
+		tangentSum[i2] += tangentDir;
+		bitangentSum[i0] += bitangentDir;
+		bitangentSum[i1] += bitangentDir;
+		bitangentSum[i2] += bitangentDir;
+	}
+
+	auto tangentBuffer = std::make_unique<geometryBuffer<float>>(vertexCount * TangentElementCount);
+	auto* out = tangentBuffer->data();
+	for(size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex)
+	{
+		Ogre::Real n[3];
+		readVertexAttribute(*normals, vertexIndex, n, 3);
+		Ogre::Vector3 normal(n[0], n[1], n[2]);
+		if(normal.squaredLength() < 1e-12f) normal = Ogre::Vector3::UNIT_Y;
+		else normal.normalise();
+
+		//Remove the normal component (Gram-Schmidt orthogonalization)
+		Ogre::Vector3 tangent = tangentSum[vertexIndex] - normal * normal.dotProduct(tangentSum[vertexIndex]);
+		if(tangent.squaredLength() < 1e-12f)
+		{
+			//Degenerate mirroring: fall back to an arbitrary vector orthogonal to the normal
+			const Ogre::Vector3 axis = std::abs(normal.x) < 0.9f ? Ogre::Vector3::UNIT_X : Ogre::Vector3::UNIT_Y;
+			tangent = axis - normal * normal.dotProduct(axis);
+		}
+		tangent.normalise();
+
+		//Positive handedness means the bitangent is cross( normal, tangent ) in the shader
+		const Ogre::Real handedness =
+			normal.crossProduct(tangent).dotProduct(bitangentSum[vertexIndex]) < 0.0f ? -1.0f : 1.0f;
+
+		out[vertexIndex * TangentElementCount + 0] = tangent.x;
+		out[vertexIndex * TangentElementCount + 1] = tangent.y;
+		out[vertexIndex * TangentElementCount + 2] = tangent.z;
+		out[vertexIndex * TangentElementCount + 3] = handedness;
+	}
+
+	return vertexBufferPart { std::move(tangentBuffer), TangentElementType, Ogre::VES_TANGENT, vertexCount, TangentElementCount };
 }
 }
 
@@ -174,6 +330,23 @@ Ogre::MeshPtr modelConverter::getOgreMesh(size_t meshIdx)
 		{
 			OgreLog("\t " + atribute.first);
 			parts.push_back(std::move(extractVertexBuffer(atribute, boundingBox)));
+		}
+
+		//Assets exported without the TANGENT attribute can't use their normal map: build the tangent
+		//frame from positions, normals and texture coordinates instead
+		const bool hasTangents = std::any_of(std::begin(parts), std::end(parts), [](const vertexBufferPart& part) {
+			return part.semantic == Ogre::VES_TANGENT;
+		});
+		if(!hasTangents)
+		{
+			auto tangentPart = generateTangentBuffer(model, parts, primitive);
+			if(tangentPart.buffer)
+			{
+				OgreLog("No TANGENT attribute: generated tangents from positions, normals and UVs");
+				parts.push_back(std::move(tangentPart));
+			}
+			else
+				OgreLog("Can't generate tangents (missing positions, normals or UVs): the normal map won't be used");
 		}
 
 		//Get (if they exist) the blend weights and bone index parts of our vertex array object content
